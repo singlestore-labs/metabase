@@ -2,9 +2,10 @@
   "SingleStore driver. Builds off of the MySQL driver since SingleStore is MySQL-compatible."
   (:refer-clojure :exclude [some not-empty])
   (:require
+   [clojure.java.jdbc :as jdbc]
    [metabase.driver :as driver]
+   [metabase.driver.sql-jdbc.common :as sql-jdbc.common]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
-   [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
    [metabase.driver.sql.query-processor :as sql.qp]
    [metabase.util.log :as log]
    [metabase.util.performance :as perf :refer [some not-empty]])
@@ -45,7 +46,7 @@
               :connectionTimeZone            "UTC"
               :forceConnectionTimeZoneToSession true}
              (dissoc details :host :port :db :ssl))
-      (sql-jdbc.conn/handle-additional-options details)))
+      (sql-jdbc.common/handle-additional-options details)))
 
 ;;; ------------------------------------------ Database Info ------------------------------------------
 
@@ -53,7 +54,7 @@
   "Fetch the version of the SingleStore database."
   [database]
   (let [spec (sql-jdbc.conn/db->pooled-connection-spec database)]
-    (jdbc.spec/with-db-connection [conn spec]
+    (jdbc/with-db-connection [conn spec]
       (-> (.getConnection conn)
           .getMetaData
           .getDatabaseProductVersion))))
@@ -69,14 +70,10 @@
 ;;; ------------------------------------------ Sync ------------------------------------------
 
 ;; SingleStore has both columnstore and rowstore tables
-;; We might want to capture this metadata for optimization hints
-(defmethod sql-jdbc.sync/describe-table :singlestore
-  [driver database table]
-  (let [table-metadata (sql-jdbc.sync/describe-table-from-jdbc-metadata driver database table)]
-    ;; TODO: Add SingleStore-specific table metadata like storage type (columnstore/rowstore)
-    ;; This would require a query like:
-    ;; SELECT STORAGE_TYPE FROM information_schema.TABLES WHERE TABLE_NAME = ?
-    table-metadata))
+;; For now, we inherit all sync behavior from MySQL
+;; TODO: Add SingleStore-specific table metadata like storage type (columnstore/rowstore)
+;; This would require a query like:
+;; SELECT STORAGE_TYPE FROM information_schema.TABLES WHERE TABLE_NAME = ?
 
 ;;; ------------------------------------------ Query Processor ------------------------------------------
 

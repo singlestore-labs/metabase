@@ -16,6 +16,7 @@
    [metabase.driver.h2]
    [metabase.driver.mysql]
    [metabase.driver.postgres]
+   [metabase.driver.singlestore]
    [metabase.embedding.settings :as embed.settings]
    [metabase.events.core :as events]
    [metabase.initialization-status.core :as init-status]
@@ -48,6 +49,7 @@
   metabase.driver.h2/keep-me
   metabase.driver.mysql/keep-me
   metabase.driver.postgres/keep-me
+  metabase.driver.singlestore/keep-me
   ;; Make sure the custom Metabase logger code gets loaded up so we use our custom logger for performance reasons.
   logger/keep-me)
 
