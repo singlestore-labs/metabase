@@ -18,6 +18,7 @@
   metabase/oracle             {:local/root "oracle"}
   metabase/presto-jdbc        {:local/root "presto-jdbc"}
   metabase/redshift           {:local/root "redshift"}
+  metabase/singlestore        {:local/root "singlestore"}
   metabase/snowflake          {:local/root "snowflake"}
   metabase/sparksql           {:local/root "sparksql"}
   metabase/sqlite             {:local/root "sqlite"}

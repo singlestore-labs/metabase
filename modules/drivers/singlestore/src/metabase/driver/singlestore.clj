@@ -7,6 +7,7 @@
 
 ;; Register SingleStore driver with MySQL as parent
 ;; SingleStore is fully MySQL-compatible, so we inherit all behavior from MySQL
+;; MySQL driver will be loaded via init steps in metabase-plugin.yaml
 (driver/register! :singlestore, :parent :mysql)
 
 (defmethod driver/display-name :singlestore [_] "SingleStore")

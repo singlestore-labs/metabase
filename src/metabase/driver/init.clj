@@ -12,6 +12,5 @@
    [metabase.driver.mysql]
    [metabase.driver.postgres]
    [metabase.driver.settings]
-   [metabase.driver.singlestore]
    ;; for the `:sql-jdbc` implementation of [[metabase.driver/incorporate-ssh-tunnel-details]]
    [metabase.driver.sql-jdbc.connection.ssh-tunnel]))
