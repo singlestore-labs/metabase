@@ -1,17 +1,60 @@
 (ns metabase.driver.singlestore
-  "SingleStore driver. Inherits from MySQL driver since SingleStore is MySQL-compatible."
+  "SingleStore driver. Inherits from MySQL driver since SingleStore is MySQL-compatible,
+   but uses the official SingleStore JDBC driver for better performance and feature support."
   (:require
+   [clojure.string :as str]
    [metabase.driver :as driver]
+   [metabase.driver.sql-jdbc.common :as sql-jdbc.common]
+   [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]))
 
 (set! *warn-on-reflection* true)
 
 ;; Register SingleStore driver with MySQL as parent
-;; SingleStore is fully MySQL-compatible, so we inherit all behavior from MySQL
+;; SingleStore is MySQL-compatible, so we inherit most behavior from MySQL
 ;; MySQL driver will be loaded via init steps in metabase-plugin.yaml
 (driver/register! :singlestore, :parent :mysql)
 
 (defmethod driver/display-name :singlestore [_] "SingleStore")
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                              Connection Details                                                 |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+(def ^:private default-connection-args
+  "Default connection args for SingleStore JDBC driver.
+   These are similar to MySQL but tailored for SingleStore."
+  {;; 0000-00-00 dates are valid in SingleStore; convert to null for Java compatibility
+   :zeroDateTimeBehavior "convertToNull"
+   ;; Force UTF-8 encoding
+   :useUnicode           true
+   :characterEncoding    "UTF8"
+   :characterSetResults  "UTF8"
+   ;; Enable compression for better performance
+   :useCompression       true
+   ;; Optimize transaction isolation handling
+   :useLocalSessionState true})
+
+(defn- make-subname
+  "Build the JDBC subname from host, port, and database name."
+  [host port db]
+  (str "//" host ":" port "/" (when-not (str/blank? db) db)))
+
+(defmethod sql-jdbc.conn/connection-details->spec :singlestore
+  [_ {ssl? :ssl, :keys [host port db dbname user password additional-options], :as details}]
+  (let [db         (or dbname db "")
+        host       (or host "localhost")
+        port       (or port 3306)
+        ssl?       (boolean ssl?)
+        base-spec  (merge
+                    default-connection-args
+                    {:classname   "com.singlestore.jdbc.Driver"
+                     :subprotocol "singlestore"
+                     :subname     (make-subname host port db)
+                     :user        user
+                     :password    password
+                     :useSSL      ssl?})]
+    (sql-jdbc.common/handle-additional-options base-spec details)))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         SingleStore-Specific Type Mappings                                     |
@@ -25,13 +68,11 @@
 
 (defmethod sql-jdbc.sync/database-type->base-type :singlestore
   [driver database-type]
-  ;; First try SingleStore-specific types, then fall back to MySQL
   (or
-   ({:BSON           :type/SerializedJSON  ; Binary JSON format
-     :GEOGRAPHY      :type/SerializedJSON  ; GeoJSON representation
-     :GEOGRAPHYPOINT :type/SerializedJSON  ; GeoJSON point
-     :VECTOR         :type/*               ; ML/AI vector type
-     ;; SingleStore's JSON is more advanced than MySQL's
+   ({:BSON           :type/SerializedJSON
+     :GEOGRAPHY      :type/SerializedJSON
+     :GEOGRAPHYPOINT :type/SerializedJSON
+     :VECTOR         :type/*
      :JSON           :type/JSON}
     (keyword (name database-type)))
    ;; Fall back to parent MySQL type mapping
@@ -39,7 +80,6 @@
 
 (defmethod sql-jdbc.sync/column->semantic-type :singlestore
   [_ database-type _]
-  ;; SingleStore-specific semantic types for better UI representation
   (case database-type
     "JSON"           :type/SerializedJSON
     "BSON"           :type/SerializedJSON
@@ -47,5 +87,14 @@
     "GEOGRAPHYPOINT" :type/SerializedJSON
     nil))
 
-;; All other functionality is inherited from MySQL driver
-;; Override specific methods here when SingleStore-specific behavior is needed
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         SingleStore-Specific Overrides                                         |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore does not support schemas in the same way as MySQL
+(defmethod sql-jdbc.sync/excluded-schemas :singlestore
+  [_]
+  #{"information_schema" "memsql" "cluster"})
+
+;; SingleStore uses Monday as start of week by default
+(defmethod driver/db-start-of-week :singlestore [_] :monday)

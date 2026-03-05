@@ -48,7 +48,6 @@
   metabase.driver.h2/keep-me
   metabase.driver.mysql/keep-me
   metabase.driver.postgres/keep-me
-  metabase.driver.singlestore/keep-me
   ;; Make sure the custom Metabase logger code gets loaded up so we use our custom logger for performance reasons.
   logger/keep-me)
 
