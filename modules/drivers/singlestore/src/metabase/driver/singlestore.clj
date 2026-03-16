@@ -4,9 +4,15 @@
   (:require
    [clojure.string :as str]
    [metabase.driver :as driver]
+   [metabase.driver-api.core :as driver-api]
    [metabase.driver.sql-jdbc.common :as sql-jdbc.common]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
-   [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]))
+   [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
+   [metabase.driver.sql.query-processor :as sql.qp]
+   [metabase.driver.sql.query-processor.util :as sql.qp.u]
+   [metabase.util :as u]
+   [metabase.util.honey-sql-2 :as h2x]
+   [metabase.util.performance :as perf]))
 
 (set! *warn-on-reflection* true)
 
@@ -98,3 +104,109 @@
 
 ;; SingleStore uses Monday as start of week by default
 (defmethod driver/db-start-of-week :singlestore [_] :monday)
+
+;; Override current-datetime-honeysql-form because h2x/current-datetime-honeysql-form
+;; has a hardcoded case statement that doesn't include :singlestore
+;; SingleStore uses the same NOW(6) function as MySQL for current timestamp with microsecond precision
+(defmethod sql.qp/current-datetime-honeysql-form :singlestore
+  [_driver]
+  (h2x/with-database-type-info [:now [:inline 6]] "timestamp"))
+
+;; Override add-interval-honeysql-form because h2x/add-interval-honeysql-form
+;; has a multimethod that doesn't include :singlestore
+;; SingleStore uses the same DATE_ADD syntax as MySQL
+(defmethod h2x/add-interval-honeysql-form :singlestore
+  [db-type hsql-form amount unit]
+  ;; SingleStore/MySQL doesn't support :millisecond as an option, but does support fractional seconds
+  (if (= unit :millisecond)
+    (recur db-type hsql-form (/ amount 1000.0) :second)
+    [:date_add hsql-form [:raw (format "INTERVAL %s %s" amount (name unit))]]))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         Type Cast Overrides                                                     |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore doesn't support CONVERT(x, TEXT) - must use CHAR instead
+;; This is used when Metabase needs to cast values to text (e.g., during fingerprinting)
+(defmethod sql.qp/->honeysql [:singlestore :text]
+  [driver [_ value]]
+  (h2x/maybe-cast "CHAR" (sql.qp/->honeysql driver value)))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         Date Truncation Overrides                                               |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore doesn't support MAKEDATE, so we need to override :year truncation
+;; MySQL uses: MAKEDATE(YEAR(col), 1)
+;; SingleStore alternative: DATE(CONCAT(YEAR(col), '-01-01'))
+(defmethod sql.qp/date [:singlestore :year]
+  [_driver _unit expr]
+  (h2x/with-database-type-info
+   [:date [:concat (h2x/year expr) (h2x/literal "-01-01")]]
+   "date"))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         JSON Query Processing                                                   |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore uses JSON_EXTRACT_STRING instead of JSON_UNQUOTE(JSON_EXTRACT(...))
+;; See: https://docs.singlestore.com/db/latest/reference/sql-reference/json-functions/json-extract-type-functions/
+
+(defmethod sql.qp/json-query :singlestore
+  [_driver unwrapped-identifier stored-field]
+  {:pre [(h2x/identifier? unwrapped-identifier)]}
+  (letfn [(handle-name [x] (str "\"" (if (number? x) (str x) (name x)) "\""))]
+    (let [field-type        (:database-type stored-field)
+          nfc-path          (:nfc-path stored-field)
+          parent-identifier (sql.qp.u/nfc-field->parent-identifier unwrapped-identifier stored-field)
+          jsonpath-query    (format "$.%s" (str/join "." (map handle-name (rest nfc-path))))
+          json-extract-str  [:json_extract_string parent-identifier jsonpath-query]
+          normalized-type   (u/lower-case-en (or field-type "text"))]
+      (case normalized-type
+        ;; For timestamps, extract as string then convert to datetime
+        "timestamp" [:convert
+                     [:str_to_date json-extract-str "\"%Y-%m-%dT%T.%fZ\""]
+                     [:raw "DATETIME"]]
+
+        ;; For booleans, just extract as string (SingleStore handles this)
+        "boolean" json-extract-str
+
+        ;; For numeric types, use JSON_EXTRACT_DOUBLE for floats
+        ("float" "double") [:json_extract_double parent-identifier jsonpath-query]
+
+        ;; For integers/bigints, use JSON_EXTRACT_BIGINT
+        ("int" "integer" "bigint") [:json_extract_bigint parent-identifier jsonpath-query]
+
+        ;; For text/string types - JSON_EXTRACT_STRING already returns a string, no conversion needed
+        ;; SingleStore doesn't support CONVERT(..., TEXT) - only CHAR is valid
+        ("text" "tinytext" "mediumtext" "longtext" "varchar" "char" "string") json-extract-str
+
+        ;; Default: extract as string and convert to the target type using CHAR (not TEXT)
+        ;; because SingleStore doesn't support TEXT as a CONVERT target type
+        [:convert json-extract-str [:raw (u/upper-case-en (or field-type "CHAR"))]]))))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         Field Clause Processing                                                 |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; Override ->honeysql for :field to ensure SingleStore's json-query is used instead of MySQL's
+;; MySQL's implementation hardcodes :mysql in the json-query call, so we need to override it
+(defmethod sql.qp/->honeysql [:singlestore :field]
+  [driver [_ id-or-name opts :as mbql-clause]]
+  (let [stored-field  (when (integer? id-or-name)
+                        (driver-api/field (driver-api/metadata-provider) id-or-name))
+        parent-method (get-method sql.qp/->honeysql [:sql :field])
+        honeysql-expr (parent-method driver mbql-clause)]
+    (cond
+      (not (driver-api/json-field? stored-field))
+      honeysql-expr
+
+      (::sql.qp/forced-alias opts)
+      (keyword (driver-api/qp.add.source-alias opts))
+
+      :else
+      ;; Use :singlestore here instead of :mysql (which MySQL hardcodes)
+      (perf/postwalk #(if (h2x/identifier? %)
+                        (sql.qp/json-query :singlestore % stored-field)
+                        %)
+                     honeysql-expr))))

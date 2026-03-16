@@ -1,23 +1,37 @@
 info:
   name: Metabase SingleStore Driver
   version: 1.0.0
-  description: Allows Metabase to connect to SingleStore databases (MySQL-compatible).
+  description: Allows Metabase to connect to SingleStore databases.
 driver:
   name: singlestore
   display-name: SingleStore
   lazy-load: true
   parent: mysql
   connection-properties:
-    - host
-    - port
-    - dbname
+    - group:
+        container-style: ["grid", "3fr 1fr"]
+        fields:
+          - host
+          - merge:
+              - port
+              - default: 3306
+    - merge:
+        - dbname
+        - display-name: Database name
+          placeholder: my_database
     - user
     - password
+    - group:
+        container-style: ["component", "backdrop"]
+        fields:
+          - ssl
+          - ssh-tunnel
     - advanced-options-start
-    - additional-options
-    - ssl
-    - ssh-tunnel
+    - merge:
+        - additional-options
+        - placeholder: "connectTimeout=10000&socketTimeout=60000"
     - default-advanced-options
+  connection-properties-include-tunnel-config: true
 init:
   - step: load-namespace
     namespace: metabase.driver.mysql
