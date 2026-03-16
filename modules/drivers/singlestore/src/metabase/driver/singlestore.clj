@@ -136,6 +136,20 @@
 ;;; |                                         Date Truncation Overrides                                               |
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
+;; Helper functions for date truncation (similar to MySQL)
+(defn- date-format [format-str expr]
+  [:date_format expr (h2x/literal format-str)])
+
+(defn- str-to-date [format-str expr]
+  [:str_to_date expr (h2x/literal format-str)])
+
+(defn- temporal-cast
+  "Cast to the appropriate temporal type, handling timestamp -> datetime conversion."
+  [type expr]
+  (if (= "timestamp" (u/lower-case-en type))
+    (h2x/maybe-cast "datetime" expr)
+    (h2x/maybe-cast type expr)))
+
 ;; SingleStore doesn't support MAKEDATE, so we need to override :year truncation
 ;; MySQL uses: MAKEDATE(YEAR(col), 1)
 ;; SingleStore alternative: DATE(CONCAT(YEAR(col), '-01-01'))
@@ -144,6 +158,18 @@
   (h2x/with-database-type-info
    [:date [:concat (h2x/year expr) (h2x/literal "-01-01")]]
    "date"))
+
+;; Override :week because MySQL's implementation hardcodes :mysql in adjust-start-of-week
+;; SingleStore uses :monday as start of week, but MySQL uses :sunday
+;; We need to use :singlestore to get the correct week offset calculation
+(defmethod sql.qp/date [:singlestore :week]
+  [_driver _unit expr]
+  (let [extract-week-fn (fn [expr]
+                          (str-to-date "%X%V %W"
+                                       (h2x/concat [:yearweek expr]
+                                                   (h2x/literal " Sunday"))))]
+    (->> (sql.qp/adjust-start-of-week :singlestore extract-week-fn expr)
+         (temporal-cast (h2x/database-type expr)))))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         JSON Query Processing                                                   |
@@ -164,18 +190,23 @@
           normalized-type   (u/lower-case-en (or field-type "text"))]
       (case normalized-type
         ;; For timestamps, extract as string then convert to datetime
+        ;; Format: 2024-03-15T10:30:45.123Z (ISO 8601)
+        ;; Note: %T is shorthand for %H:%i:%s, %f handles microseconds
         "timestamp" [:convert
-                     [:str_to_date json-extract-str "\"%Y-%m-%dT%T.%fZ\""]
+                     [:str_to_date json-extract-str "%Y-%m-%dT%T.%fZ"]
                      [:raw "DATETIME"]]
 
         ;; For booleans, just extract as string (SingleStore handles this)
         "boolean" json-extract-str
 
-        ;; For numeric types, use JSON_EXTRACT_DOUBLE for floats
-        ("float" "double") [:json_extract_double parent-identifier jsonpath-query]
+        ;; For floating-point and decimal types, use JSON_EXTRACT_DOUBLE
+        ;; Note: "decimal" is routed here because CONVERT(..., DECIMAL) without precision
+        ;; defaults to DECIMAL(10,0) which truncates fractional parts silently
+        ;; See: https://dev.mysql.com/doc/refman/8.4/en/fixed-point-types.html
+        ("float" "double" "decimal" "numeric" "real") [:json_extract_double parent-identifier jsonpath-query]
 
         ;; For integers/bigints, use JSON_EXTRACT_BIGINT
-        ("int" "integer" "bigint") [:json_extract_bigint parent-identifier jsonpath-query]
+        ("int" "integer" "bigint" "smallint" "tinyint" "mediumint") [:json_extract_bigint parent-identifier jsonpath-query]
 
         ;; For text/string types - JSON_EXTRACT_STRING already returns a string, no conversion needed
         ;; SingleStore doesn't support CONVERT(..., TEXT) - only CHAR is valid
