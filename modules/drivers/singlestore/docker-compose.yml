@@ -1,0 +1,17 @@
+services:
+  singlestore:
+    image: 'ghcr.io/singlestore-labs/singlestoredb-dev:latest'
+    container_name: 'metabase-driver-singlestore'
+    hostname: singlestore
+    ports:
+      - '3306:3306'
+      - '8080:8080'
+      - '9000:9000'
+    environment:
+      ROOT_PASSWORD: 'metabase'
+      SINGLESTORE_LICENSE: ${SINGLESTORE_LICENSE:-}
+    volumes:
+      - singlestore-data:/var/lib/memsql
+
+volumes:
+  singlestore-data:

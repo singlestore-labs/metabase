@@ -33,6 +33,7 @@ jobs:
       postgres-should-run: ${{ steps.driver-decisions.outputs.postgres-should-run }}
       presto-jdbc-should-run: ${{ steps.driver-decisions.outputs.presto-jdbc-should-run }}
       redshift-should-run: ${{ steps.driver-decisions.outputs.redshift-should-run }}
+      singlestore-should-run: ${{ steps.driver-decisions.outputs.singlestore-should-run }}
       snowflake-should-run: ${{ steps.driver-decisions.outputs.snowflake-should-run }}
       sparksql-should-run: ${{ steps.driver-decisions.outputs.sparksql-should-run }}
       sqlite-should-run: ${{ steps.driver-decisions.outputs.sqlite-should-run }}
@@ -53,6 +54,7 @@ jobs:
       postgres-quarantine-conflict: ${{ steps.driver-decisions.outputs.postgres-quarantine-conflict }}
       presto-jdbc-quarantine-conflict: ${{ steps.driver-decisions.outputs.presto-jdbc-quarantine-conflict }}
       redshift-quarantine-conflict: ${{ steps.driver-decisions.outputs.redshift-quarantine-conflict }}
+      singlestore-quarantine-conflict: ${{ steps.driver-decisions.outputs.singlestore-quarantine-conflict }}
       snowflake-quarantine-conflict: ${{ steps.driver-decisions.outputs.snowflake-quarantine-conflict }}
       sparksql-quarantine-conflict: ${{ steps.driver-decisions.outputs.sparksql-quarantine-conflict }}
       sqlite-quarantine-conflict: ${{ steps.driver-decisions.outputs.sqlite-quarantine-conflict }}
@@ -1244,6 +1246,69 @@ jobs:
         upload-logs: ${{ steps.test-driver.outcome == 'failure' }}
         logs-artifact-suffix: ${{ matrix.job.name }} ${{ matrix.version.name }}
 
+  be-tests-singlestore-ee:
+    needs: determine-driver-skips
+    if: ${{ needs.determine-driver-skips.outputs.singlestore-should-run == 'true' || needs.determine-driver-skips.outputs.singlestore-quarantine-conflict == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CI: 'true'
+      DRIVERS: singlestore
+      MB_SINGLESTORE_TEST_HOST: localhost
+      MB_SINGLESTORE_TEST_PORT: 3306
+      MB_SINGLESTORE_TEST_USER: root
+      MB_SINGLESTORE_TEST_PASSWORD: metabase
+    name: SingleStore
+    steps:
+    - name: Fail on quarantine conflict
+      if: ${{ needs.determine-driver-skips.outputs.singlestore-quarantine-conflict == 'true' }}
+      run: |
+        echo "::error::SingleStore driver is quarantined but you changed files in modules/drivers/singlestore/"
+        echo ""
+        echo "Your changes will NOT be tested because the driver is currently quarantined."
+        echo "To run SingleStore tests, add the label: break-quarantine-singlestore"
+        echo ""
+        echo "If you merge without testing, you risk breaking the SingleStore driver!"
+        exit 1
+    - uses: actions/checkout@v4
+    - name: Start SingleStore in Docker
+      uses: hoverkraft-tech/compose-action@v2.0.0
+      with:
+        compose-file: "modules/drivers/singlestore/docker-compose.yml"
+        down-flags: "--volumes"
+        services: |
+          singlestore
+    - name: Wait for SingleStore to be ready
+      run: |
+        echo "Waiting for SingleStore to start..."
+        for i in {1..60}; do
+          if docker exec metabase-driver-singlestore singlestore -uroot -pmetabase -e "SELECT 1" >/dev/null 2>&1; then
+            echo "SingleStore is ready!"
+            break
+          fi
+          echo "Waiting... ($i/60)"
+          sleep 5
+        done
+    - name: Test SingleStore driver
+      id: test-driver
+      uses: ./.github/actions/test-driver
+      with:
+        junit-name: 'be-tests-singlestore-ee'
+        test-args: >-
+          :only-tags [:mb/driver-tests]
+        logs-artifact-suffix: SingleStore
+    - name: Upload Test Results
+      uses: ./.github/actions/upload-test-results
+      if: always()
+      with:
+        input-path: ./target/junit/
+        output-name: ${{ github.job }}
+        bucket: ${{ vars.AWS_S3_TEST_RESULTS_BUCKET }}
+        aws-access-key-id: ${{ secrets.AWS_TEST_RESULTS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_TEST_RESULTS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.AWS_REGION }}
+        trunk-api-token: ${{ secrets.TRUNK_API_TOKEN }}
+
   be-tests-snowflake-ee:
     needs: determine-driver-skips
     if: ${{ needs.determine-driver-skips.outputs.snowflake-should-run == 'true' || needs.determine-driver-skips.outputs.snowflake-quarantine-conflict == 'true' }}
@@ -1632,6 +1697,7 @@ jobs:
       - be-tests-postgres
       - be-tests-presto-jdbc-ee
       - be-tests-redshift-ee
+      - be-tests-singlestore-ee
       - be-tests-snowflake-ee
       - be-tests-sparksql-ee
       - be-tests-sqlite-ee
