@@ -27,20 +27,6 @@
 ;;; |                                              Connection Details                                                 |
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
-(def ^:private default-connection-args
-  "Default connection args for SingleStore JDBC driver.
-   These are similar to MySQL but tailored for SingleStore."
-  {;; 0000-00-00 dates are valid in SingleStore; convert to null for Java compatibility
-   :zeroDateTimeBehavior "convertToNull"
-   ;; Force UTF-8 encoding
-   :useUnicode           true
-   :characterEncoding    "UTF8"
-   :characterSetResults  "UTF8"
-   ;; Enable compression for better performance
-   :useCompression       true
-   ;; Optimize transaction isolation handling
-   :useLocalSessionState true})
-
 (defn- make-subname
   "Build the JDBC subname from host, port, and database name."
   [host port db]
@@ -48,18 +34,16 @@
 
 (defmethod sql-jdbc.conn/connection-details->spec :singlestore
   [_ {ssl? :ssl, :keys [host port db dbname user password additional-options], :as details}]
-  (let [db         (or dbname db "")
-        host       (or host "localhost")
-        port       (or port 3306)
-        ssl?       (boolean ssl?)
-        base-spec  (merge
-                    default-connection-args
-                    {:classname   "com.singlestore.jdbc.Driver"
-                     :subprotocol "singlestore"
-                     :subname     (make-subname host port db)
-                     :user        user
-                     :password    password
-                     :useSSL      ssl?})]
+  (let [db        (or dbname db "")
+        host      (or host "localhost")
+        port      (or port 3306)
+        ssl?      (boolean ssl?)
+        base-spec {:classname   "com.singlestore.jdbc.Driver"
+                   :subprotocol "singlestore"
+                   :subname     (make-subname host port db)
+                   :user        user
+                   :password    password
+                   :useSSL      ssl?}]
     (sql-jdbc.common/handle-additional-options base-spec details)))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
@@ -103,7 +87,9 @@
   #{"information_schema" "memsql" "cluster"})
 
 ;; SingleStore uses Monday as start of week by default
-(defmethod driver/db-start-of-week :singlestore [_] :monday)
+;; SingleStore's YEARWEEK defaults to mode 0 (Sunday start) and DAYOFWEEK returns 1 for Sunday,
+;; matching MySQL. Must be :sunday so adjust-start-of-week computes correct offsets.
+(defmethod driver/db-start-of-week :singlestore [_] :sunday)
 
 ;; Override current-datetime-honeysql-form because h2x/current-datetime-honeysql-form
 ;; has a hardcoded case statement that doesn't include :singlestore
@@ -155,13 +141,13 @@
 ;; SingleStore alternative: DATE(CONCAT(YEAR(col), '-01-01'))
 (defmethod sql.qp/date [:singlestore :year]
   [_driver _unit expr]
-  (h2x/with-database-type-info
-   [:date [:concat (h2x/year expr) (h2x/literal "-01-01")]]
-   "date"))
+  (->> (h2x/with-database-type-info
+        [:date [:concat (h2x/year expr) (h2x/literal "-01-01")]]
+        "date")
+       (temporal-cast (h2x/database-type expr))))
 
-;; Override :week because MySQL's implementation hardcodes :mysql in adjust-start-of-week
-;; SingleStore uses :monday as start of week, but MySQL uses :sunday
-;; We need to use :singlestore to get the correct week offset calculation
+;; Override :week because MySQL's implementation hardcodes :mysql in adjust-start-of-week.
+;; We need to pass :singlestore so the offset is computed using our db-start-of-week.
 (defmethod sql.qp/date [:singlestore :week]
   [_driver _unit expr]
   (let [extract-week-fn (fn [expr]

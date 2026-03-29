@@ -3,7 +3,4 @@
 
  :deps
  {;; SingleStore official JDBC driver (recommended for best performance and feature support)
-  com.singlestore/singlestore-jdbc-client {:mvn/version "1.2.5"}}
- 
- :aliases
- {:skip-aot {}}}
+  com.singlestore/singlestore-jdbc-client {:mvn/version "1.2.5"}}}

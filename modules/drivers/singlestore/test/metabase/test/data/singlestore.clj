@@ -4,7 +4,6 @@
   (:require
    [metabase.test :as mt]
    [metabase.test.data.interface :as tx]
-   [metabase.test.data.sql :as sql.tx]
    [metabase.test.data.sql-jdbc :as sql-jdbc.tx]))
 
 (set! *warn-on-reflection* true)
@@ -27,11 +26,7 @@
 
 ;;; ------------------------------------------ Field Type Mappings ------------------------------------------
 
-;; SingleStore supports the same data types as MySQL
-;; Inherit all field type mappings from MySQL by dispatching to parent
-(doseq [base-type [:type/BigInteger :type/Boolean :type/Date :type/DateTime
-                   :type/DateTimeWithTZ :type/Decimal :type/Float :type/Integer
-                   :type/JSON :type/Text :type/Time]]
-  (defmethod sql.tx/field-base-type->sql-type [:singlestore base-type]
-    [driver base-type-kw]
-    ((get-method sql.tx/field-base-type->sql-type [:mysql base-type-kw]) driver base-type-kw)))
+;; SingleStore supports the same data types as MySQL.
+;; Since :singlestore is registered with :parent :mysql, the multimethod
+;; dispatch for field-base-type->sql-type automatically falls back to
+;; [:mysql base-type] via the driver hierarchy. No explicit overrides needed.

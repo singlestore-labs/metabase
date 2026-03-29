@@ -1284,11 +1284,13 @@ jobs:
         for i in {1..60}; do
           if docker exec metabase-driver-singlestore singlestore -uroot -pmetabase -e "SELECT 1" >/dev/null 2>&1; then
             echo "SingleStore is ready!"
-            break
+            exit 0
           fi
           echo "Waiting... ($i/60)"
           sleep 5
         done
+        echo "::error::SingleStore failed to start within 300 seconds"
+        exit 1
     - name: Test SingleStore driver
       id: test-driver
       uses: ./.github/actions/test-driver
