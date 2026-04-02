@@ -86,9 +86,9 @@
   [_]
   #{"information_schema" "memsql" "cluster"})
 
-;; SingleStore uses Monday as start of week by default
-;; SingleStore's YEARWEEK defaults to mode 0 (Sunday start) and DAYOFWEEK returns 1 for Sunday,
-;; matching MySQL. Must be :sunday so adjust-start-of-week computes correct offsets.
+;; SingleStore's week-related functions use Sunday as the start of week, matching MySQL.
+;; YEARWEEK defaults to mode 0 (Sunday start) and DAYOFWEEK returns 1 for Sunday,
+;; so this must be :sunday for adjust-start-of-week to compute correct offsets.
 (defmethod driver/db-start-of-week :singlestore [_] :sunday)
 
 ;; Override current-datetime-honeysql-form because h2x/current-datetime-honeysql-form

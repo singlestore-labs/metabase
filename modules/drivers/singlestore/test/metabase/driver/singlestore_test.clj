@@ -1,4 +1,4 @@
-(ns metabase.driver.singlestore-test
+(ns ^:mb/driver-tests metabase.driver.singlestore-test
   "Tests for the SingleStore driver."
   (:require
    [clojure.test :refer :all]
@@ -21,8 +21,8 @@
     (is (= "SingleStore" (driver/display-name :singlestore)))))
 
 (deftest db-start-of-week-test
-  (testing "SingleStore uses Monday as start of week"
-    (is (= :monday (driver/db-start-of-week :singlestore)))))
+  (testing "SingleStore uses Sunday as start of week (matching MySQL's YEARWEEK/DAYOFWEEK behavior)"
+    (is (= :sunday (driver/db-start-of-week :singlestore)))))
 
 ;;; ------------------------------------------ Connection Tests ------------------------------------------
 
