@@ -3,6 +3,7 @@
    but uses the official SingleStore JDBC driver for better performance and feature support."
   (:require
    [clojure.string :as str]
+   [java-time.api :as t]
    [metabase.driver :as driver]
    [metabase.driver-api.core :as driver-api]
    [metabase.driver.sql-jdbc.common :as sql-jdbc.common]
@@ -12,8 +13,11 @@
    [metabase.driver.sql.query-processor :as sql.qp]
    [metabase.driver.sql.query-processor.util :as sql.qp.u]
    [metabase.util :as u]
+   [metabase.util.date-2 :as u.date]
    [metabase.util.honey-sql-2 :as h2x]
-   [metabase.util.performance :as perf]))
+   [metabase.util.performance :as perf])
+  (:import
+   (java.time LocalDate LocalDateTime LocalTime OffsetDateTime OffsetTime ZonedDateTime)))
 
 (set! *warn-on-reflection* true)
 
@@ -39,12 +43,13 @@
         host      (or host "localhost")
         port      (or port 3306)
         ssl?      (boolean ssl?)
-        base-spec {:classname   "com.singlestore.jdbc.Driver"
-                   :subprotocol "singlestore"
-                   :subname     (make-subname host port db)
-                   :user        user
-                   :password    password
-                   :useSSL      ssl?}]
+        base-spec {:classname        "com.singlestore.jdbc.Driver"
+                   :subprotocol      "singlestore"
+                   :subname          (make-subname host port db)
+                   :user             user
+                   :password         password
+                   :useSSL           ssl?
+                   :allowLocalInfile true}]
     (sql-jdbc.common/handle-additional-options base-spec details)))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
@@ -148,7 +153,17 @@
   [:date_format expr (h2x/literal format-str)])
 
 (defn- str-to-date [format-str expr]
-  [:str_to_date expr (h2x/literal format-str)])
+  (let [contains-date-parts? (some #(str/includes? format-str %)
+                                   ["%a" "%b" "%c" "%D" "%d" "%e" "%j" "%M" "%m" "%U"
+                                    "%u" "%V" "%v" "%W" "%w" "%X" "%x" "%Y" "%y"])
+        contains-time-parts? (some #(str/includes? format-str %)
+                                   ["%f" "%H" "%h" "%I" "%i" "%k" "%l" "%p" "%r" "%S" "%s" "%T"])
+        database-type        (cond
+                               (and contains-date-parts? (not contains-time-parts?)) "date"
+                               (and contains-time-parts? (not contains-date-parts?)) "time"
+                               :else                                                 "datetime")]
+    (-> [:str_to_date expr (h2x/literal format-str)]
+        (h2x/with-database-type-info database-type))))
 
 (defn- temporal-cast
   "Cast to the appropriate temporal type, handling timestamp -> datetime conversion."
@@ -250,3 +265,48 @@
                         (sql.qp/json-query :singlestore % stored-field)
                         %)
                      honeysql-expr))))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         Inline Value Overrides                                                  |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore doesn't support SQL standard typed literals (date '...', time '...', timestamp '...').
+;; Use function-call syntax instead.
+
+(defmethod sql.qp/inline-value [:singlestore LocalDate]
+  [_ t]
+  (format "DATE('%s')" (u.date/format t)))
+
+(defmethod sql.qp/inline-value [:singlestore LocalTime]
+  [_ t]
+  (format "CAST('%s' AS TIME)" (u.date/format "HH:mm:ss.SSS" t)))
+
+(defmethod sql.qp/inline-value [:singlestore LocalDateTime]
+  [_ t]
+  (format "TIMESTAMP('%s')" (u.date/format "yyyy-MM-dd HH:mm:ss.SSS" t)))
+
+(defn- format-offset [t]
+  (let [offset (t/format "ZZZZZ" (t/zone-offset t))]
+    (if (= offset "Z")
+      "UTC"
+      offset)))
+
+;; SingleStore doesn't support session timezone, so use CONVERT_TZ with explicit UTC target
+;; instead of @@session.time_zone
+(defmethod sql.qp/inline-value [:singlestore OffsetTime]
+  [_ t]
+  (format "convert_tz('%s', '%s', 'UTC')"
+          (t/format "HH:mm:ss.SSS" t)
+          (format-offset t)))
+
+(defmethod sql.qp/inline-value [:singlestore OffsetDateTime]
+  [_ t]
+  (format "convert_tz('%s', '%s', 'UTC')"
+          (t/format "yyyy-MM-dd HH:mm:ss.SSS" t)
+          (format-offset t)))
+
+(defmethod sql.qp/inline-value [:singlestore ZonedDateTime]
+  [_ t]
+  (format "convert_tz('%s', '%s', 'UTC')"
+          (t/format "yyyy-MM-dd HH:mm:ss.SSS" t)
+          (str (t/zone-id t))))
