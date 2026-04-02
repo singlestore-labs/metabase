@@ -7,6 +7,7 @@
    [metabase.driver-api.core :as driver-api]
    [metabase.driver.sql-jdbc.common :as sql-jdbc.common]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
+   [metabase.driver.sql-jdbc.execute.old-impl :as sql-jdbc.execute.old]
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
    [metabase.driver.sql.query-processor :as sql.qp]
    [metabase.driver.sql.query-processor.util :as sql.qp.u]
@@ -45,6 +46,16 @@
                    :password    password
                    :useSSL      ssl?}]
     (sql-jdbc.common/handle-additional-options base-spec details)))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         Session Timezone                                                       |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore silently ignores SET @@session.time_zone — the value always stays at SYSTEM.
+;; Return nil to tell Metabase that SingleStore does not support session-level timezone,
+;; so results-timezone-id will correctly fall back to UTC rather than the report timezone.
+;; Note: CONVERT_TZ() still works for explicit timezone conversions in queries.
+(defmethod sql-jdbc.execute.old/set-timezone-sql :singlestore [_] nil)
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         SingleStore-Specific Type Mappings                                     |
@@ -86,6 +97,10 @@
   [_]
   #{"information_schema" "memsql" "cluster"})
 
+;; SingleStore does not support foreign key constraints, so disable FK-related features.
+(doseq [feature [:describe-fks :metadata/key-constraints]]
+  (defmethod driver/database-supports? [:singlestore feature] [_driver _feature _db] false))
+
 ;; SingleStore's week-related functions use Sunday as the start of week, matching MySQL.
 ;; YEARWEEK defaults to mode 0 (Sunday start) and DAYOFWEEK returns 1 for Sunday,
 ;; so this must be :sunday for adjust-start-of-week to compute correct offsets.
@@ -111,6 +126,12 @@
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         Type Cast Overrides                                                     |
 ;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore doesn't support CAST(x AS DOUBLE) — only FLOAT, DECIMAL, SIGNED, etc. are valid.
+;; Use the (x + 0.0) trick to implicitly convert to double precision.
+(defmethod sql.qp/->float :singlestore
+  [_driver value]
+  (h2x/with-database-type-info [:+ value [:inline 0.0]] "double"))
 
 ;; SingleStore doesn't support CONVERT(x, TEXT) - must use CHAR instead
 ;; This is used when Metabase needs to cast values to text (e.g., during fingerprinting)
@@ -148,11 +169,13 @@
 
 ;; Override :week because MySQL's implementation hardcodes :mysql in adjust-start-of-week.
 ;; We need to pass :singlestore so the offset is computed using our db-start-of-week.
+;; SingleStore doesn't have YEARWEEK(), so we use DATE_FORMAT(expr, '%X%V') instead.
+;; %X = year-for-week (Sunday start), %V = week number (01-53, Sunday start).
 (defmethod sql.qp/date [:singlestore :week]
   [_driver _unit expr]
   (let [extract-week-fn (fn [expr]
                           (str-to-date "%X%V %W"
-                                       (h2x/concat [:yearweek expr]
+                                       (h2x/concat (date-format "%X%V" expr)
                                                    (h2x/literal " Sunday"))))]
     (->> (sql.qp/adjust-start-of-week :singlestore extract-week-fn expr)
          (temporal-cast (h2x/database-type expr)))))
