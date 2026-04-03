@@ -11,7 +11,6 @@
    [metabase.driver.sql :as driver.sql]
    [metabase.driver.sql-jdbc.common :as sql-jdbc.common]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
-   [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]
    [metabase.driver.sql-jdbc.execute.old-impl :as sql-jdbc.execute.old]
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
    [metabase.driver.sql-jdbc.sync.common :as sql-jdbc.sync.common]
@@ -24,7 +23,7 @@
    [metabase.util.honey-sql-2 :as h2x]
    [metabase.util.performance :as perf])
   (:import
-   (java.sql Connection DatabaseMetaData ResultSet ResultSetMetaData Statement)
+   (java.sql Connection DatabaseMetaData ResultSet Statement)
    (java.time LocalDate LocalDateTime LocalTime OffsetDateTime OffsetTime ZonedDateTime)))
 
 (set! *warn-on-reflection* true)
@@ -51,14 +50,25 @@
         host      (or host "localhost")
         port      (or port 3306)
         ssl?      (boolean ssl?)
-        base-spec {:classname        "com.singlestore.jdbc.Driver"
-                   :subprotocol      "singlestore"
-                   :subname          (make-subname host port db)
-                   :user             user
-                   :password         password
-                   :useSSL           ssl?
-                   :allowLocalInfile true}]
+        base-spec {:classname   "com.singlestore.jdbc.Driver"
+                   :subprotocol "singlestore"
+                   :subname     (make-subname host port db)
+                   :user        user
+                   :password    password
+                   :useSSL      ssl?}]
     (sql-jdbc.common/handle-additional-options base-spec details)))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         CSV Upload / insert-into!                                              |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; The inherited MySQL insert-into! uses LOAD DATA LOCAL INFILE when server-side local_infile=ON,
+;; which requires allowLocalInfile=true on the JDBC connection. Rather than enabling that on every
+;; connection (security risk: a malicious server could request arbitrary local file reads), we
+;; always use the standard INSERT INTO path for SingleStore.
+(defmethod driver/insert-into! :singlestore
+  [driver db-id table-name column-names values]
+  ((get-method driver/insert-into! :sql-jdbc) driver db-id table-name column-names values))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         Session Timezone                                                       |
@@ -347,8 +357,9 @@
 ;;; |                                         Primary Key Detection                                                   |
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
-;; SingleStore's JDBC driver may not return results from DatabaseMetaData.getPrimaryKeys
-;; for all table types. Query information_schema directly for reliable PK detection.
+;; The default :sql-jdbc get-table-pks passes db-name-or-nil as the catalog argument,
+;; which can be nil. SingleStore's JDBC driver requires the catalog (database name) to
+;; be set for getPrimaryKeys to return results. Use the connection's current catalog.
 (defmethod sql-jdbc.describe-table/get-table-pks :singlestore
   [_driver ^Connection conn _db-name-or-nil table]
   (let [^DatabaseMetaData metadata (.getMetaData conn)
@@ -357,29 +368,6 @@
           (sql-jdbc.sync.common/reducible-results
            #(.getPrimaryKeys metadata catalog (:schema table) (:name table))
            (fn [^ResultSet rs] #(.getString rs "COLUMN_NAME"))))))
-
-;;; +----------------------------------------------------------------------------------------------------------------+
-;;; |                                         TINYINT(1) → Boolean Mapping                                           |
-;;; +----------------------------------------------------------------------------------------------------------------+
-
-;; MySQL maps TINYINT(1) to BIT (boolean) during query execution so that boolean columns
-;; return true/false instead of 1/0. SingleStore uses the same convention, so apply
-;; the same override. Without this, upload tests that check boolean values fail.
-(defmethod sql-jdbc.execute/db-type-name :singlestore
-  [_driver ^ResultSetMetaData rsmeta column-index]
-  (let [db               (try
-                           (driver-api/database (driver-api/metadata-provider))
-                           (catch Throwable _ nil))
-        tiny-int-1-is-bit? (not (some-> db :details :additional-options (str/includes? "tinyInt1isBit=false")))
-        db-type-name     (.getColumnTypeName rsmeta column-index)
-        precision        (try
-                           (.getPrecision rsmeta column-index)
-                           (catch Throwable _ nil))]
-    (if (and (= "TINYINT" db-type-name)
-             (= precision 1)
-             tiny-int-1-is-bit?)
-      "BIT"
-      db-type-name)))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         JSON Field Length                                                        |
