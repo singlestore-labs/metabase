@@ -2,21 +2,29 @@
   "SingleStore driver. Inherits from MySQL driver since SingleStore is MySQL-compatible,
    but uses the official SingleStore JDBC driver for better performance and feature support."
   (:require
+   [clojure.java.jdbc :as jdbc]
    [clojure.string :as str]
+   [honey.sql :as sql]
    [java-time.api :as t]
    [metabase.driver :as driver]
    [metabase.driver-api.core :as driver-api]
+   [metabase.driver.sql :as driver.sql]
    [metabase.driver.sql-jdbc.common :as sql-jdbc.common]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
+   [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]
    [metabase.driver.sql-jdbc.execute.old-impl :as sql-jdbc.execute.old]
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
+   [metabase.driver.sql-jdbc.sync.common :as sql-jdbc.sync.common]
+   [metabase.driver.sql-jdbc.sync.describe-table :as sql-jdbc.describe-table]
    [metabase.driver.sql.query-processor :as sql.qp]
    [metabase.driver.sql.query-processor.util :as sql.qp.u]
+   [metabase.driver.sql.util :as sql.u]
    [metabase.util :as u]
    [metabase.util.date-2 :as u.date]
    [metabase.util.honey-sql-2 :as h2x]
    [metabase.util.performance :as perf])
   (:import
+   (java.sql Connection DatabaseMetaData ResultSet ResultSetMetaData Statement)
    (java.time LocalDate LocalDateTime LocalTime OffsetDateTime OffsetTime ZonedDateTime)))
 
 (set! *warn-on-reflection* true)
@@ -103,8 +111,26 @@
   #{"information_schema" "memsql" "cluster"})
 
 ;; SingleStore does not support foreign key constraints, so disable FK-related features.
-(doseq [feature [:describe-fks :metadata/key-constraints]]
+;; SingleStore does not support MySQL's atomic multi-table `RENAME TABLE t1 TO t2, t3 TO t4` syntax,
+;; so disable :atomic-renames. Single-table rename is supported via ALTER TABLE ... RENAME TO.
+(doseq [feature [:describe-fks :metadata/key-constraints :atomic-renames]]
   (defmethod driver/database-supports? [:singlestore feature] [_driver _feature _db] false))
+
+;; SingleStore doesn't support MySQL's `RENAME TABLE t1 TO t2` syntax.
+;; Use `ALTER TABLE t1 RENAME TO t2` instead, which is the standard SingleStore approach.
+(defmethod driver/rename-tables!* :singlestore
+  [driver db-id sorted-rename-map]
+  (let [sqls (mapv (fn [[from-table to-table]]
+                     (first (sql/format {:alter-table (keyword from-table)
+                                         :rename-table (keyword (name to-table))}
+                                        :quoted true
+                                        :dialect (sql.qp/quote-style driver))))
+                   sorted-rename-map)]
+    (jdbc/with-db-transaction [t-conn (sql-jdbc.conn/db->pooled-connection-spec db-id)]
+      (with-open [stmt (.createStatement ^Connection (:connection t-conn))]
+        (doseq [sql sqls]
+          (.addBatch ^Statement stmt ^String sql))
+        (.executeBatch ^Statement stmt)))))
 
 ;; SingleStore's week-related functions use Sunday as the start of week, matching MySQL.
 ;; YEARWEEK defaults to mode 0 (Sunday start) and DAYOFWEEK returns 1 for Sunday,
@@ -201,44 +227,39 @@
 
 ;; SingleStore uses JSON_EXTRACT_STRING instead of JSON_UNQUOTE(JSON_EXTRACT(...))
 ;; See: https://docs.singlestore.com/db/latest/reference/sql-reference/json-functions/json-extract-type-functions/
+;;
+;; IMPORTANT: SingleStore's JSON_EXTRACT_* functions use separate string arguments for each
+;; key in the path, NOT JSONPath syntax. For example:
+;;   JSON_EXTRACT_STRING(col, 'key')              -- top-level key
+;;   JSON_EXTRACT_STRING(col, 'nested', 'key')    -- nested key
+;; NOT: JSON_EXTRACT_STRING(col, '$."key"')        -- this returns NULL!
 
 (defmethod sql.qp/json-query :singlestore
   [_driver unwrapped-identifier stored-field]
   {:pre [(h2x/identifier? unwrapped-identifier)]}
-  (letfn [(handle-name [x] (str "\"" (if (number? x) (str x) (name x)) "\""))]
-    (let [field-type        (:database-type stored-field)
-          nfc-path          (:nfc-path stored-field)
-          parent-identifier (sql.qp.u/nfc-field->parent-identifier unwrapped-identifier stored-field)
-          jsonpath-query    (format "$.%s" (str/join "." (map handle-name (rest nfc-path))))
-          json-extract-str  [:json_extract_string parent-identifier jsonpath-query]
-          normalized-type   (u/lower-case-en (or field-type "text"))]
-      (case normalized-type
-        ;; For timestamps, extract as string then convert to datetime
-        ;; Format: 2024-03-15T10:30:45.123Z (ISO 8601)
-        ;; Note: %T is shorthand for %H:%i:%s, %f handles microseconds
-        "timestamp" [:convert
-                     [:str_to_date json-extract-str "%Y-%m-%dT%T.%fZ"]
-                     [:raw "DATETIME"]]
+  (let [field-type        (:database-type stored-field)
+        nfc-path          (:nfc-path stored-field)
+        parent-identifier (sql.qp.u/nfc-field->parent-identifier unwrapped-identifier stored-field)
+        key-args          (mapv (fn [x] (if (number? x) (str x) (name x))) (rest nfc-path))
+        json-extract-str  (into [:json_extract_string parent-identifier] key-args)
+        normalized-type   (u/lower-case-en (or field-type "text"))]
+    (case normalized-type
+      "timestamp" [:convert
+                   [:str_to_date json-extract-str "%Y-%m-%dT%T.%fZ"]
+                   [:raw "DATETIME"]]
 
-        ;; For booleans, just extract as string (SingleStore handles this)
-        "boolean" json-extract-str
+      "boolean" json-extract-str
 
-        ;; For floating-point and decimal types, use JSON_EXTRACT_DOUBLE
-        ;; Note: "decimal" is routed here because CONVERT(..., DECIMAL) without precision
-        ;; defaults to DECIMAL(10,0) which truncates fractional parts silently
-        ;; See: https://dev.mysql.com/doc/refman/8.4/en/fixed-point-types.html
-        ("float" "double" "decimal" "numeric" "real") [:json_extract_double parent-identifier jsonpath-query]
+      ("float" "double" "decimal" "numeric" "real")
+      (into [:json_extract_double parent-identifier] key-args)
 
-        ;; For integers/bigints, use JSON_EXTRACT_BIGINT
-        ("int" "integer" "bigint" "smallint" "tinyint" "mediumint") [:json_extract_bigint parent-identifier jsonpath-query]
+      ("int" "integer" "bigint" "smallint" "tinyint" "mediumint")
+      (into [:json_extract_bigint parent-identifier] key-args)
 
-        ;; For text/string types - JSON_EXTRACT_STRING already returns a string, no conversion needed
-        ;; SingleStore doesn't support CONVERT(..., TEXT) - only CHAR is valid
-        ("text" "tinytext" "mediumtext" "longtext" "varchar" "char" "string") json-extract-str
+      ("text" "tinytext" "mediumtext" "longtext" "varchar" "char" "string")
+      json-extract-str
 
-        ;; Default: extract as string and convert to the target type using CHAR (not TEXT)
-        ;; because SingleStore doesn't support TEXT as a CONVERT target type
-        [:convert json-extract-str [:raw (u/upper-case-en (or field-type "CHAR"))]]))))
+      [:convert json-extract-str [:raw (u/upper-case-en (or field-type "CHAR"))]])))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         Field Clause Processing                                                 |
@@ -310,3 +331,62 @@
   (format "convert_tz('%s', '%s', 'UTC')"
           (t/format "yyyy-MM-dd HH:mm:ss.SSS" t)
           (str (t/zone-id t))))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         prettify-native-form                                                    |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore is MySQL-compatible, so use the :mysql SQL formatter dialect.
+;; The default :sql dispatch uses StandardSql which adds spaces inside backtick-quoted
+;; identifiers (e.g. ` orders ` instead of `orders`), causing "table not found" errors.
+(defmethod driver/prettify-native-form :singlestore
+  [_ native-form]
+  (sql.u/format-sql-and-fix-params :mysql native-form))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         Primary Key Detection                                                   |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore's JDBC driver may not return results from DatabaseMetaData.getPrimaryKeys
+;; for all table types. Query information_schema directly for reliable PK detection.
+(defmethod sql-jdbc.describe-table/get-table-pks :singlestore
+  [_driver ^Connection conn _db-name-or-nil table]
+  (let [^DatabaseMetaData metadata (.getMetaData conn)
+        catalog                    (.getCatalog conn)]
+    (into []
+          (sql-jdbc.sync.common/reducible-results
+           #(.getPrimaryKeys metadata catalog (:schema table) (:name table))
+           (fn [^ResultSet rs] #(.getString rs "COLUMN_NAME"))))))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         TINYINT(1) → Boolean Mapping                                           |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; MySQL maps TINYINT(1) to BIT (boolean) during query execution so that boolean columns
+;; return true/false instead of 1/0. SingleStore uses the same convention, so apply
+;; the same override. Without this, upload tests that check boolean values fail.
+(defmethod sql-jdbc.execute/db-type-name :singlestore
+  [_driver ^ResultSetMetaData rsmeta column-index]
+  (let [db               (try
+                           (driver-api/database (driver-api/metadata-provider))
+                           (catch Throwable _ nil))
+        tiny-int-1-is-bit? (not (some-> db :details :additional-options (str/includes? "tinyInt1isBit=false")))
+        db-type-name     (.getColumnTypeName rsmeta column-index)
+        precision        (try
+                           (.getPrecision rsmeta column-index)
+                           (catch Throwable _ nil))]
+    (if (and (= "TINYINT" db-type-name)
+             (= precision 1)
+             tiny-int-1-is-bit?)
+      "BIT"
+      db-type-name)))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         JSON Field Length                                                        |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; Used by JSON nested field column sampling to determine if a JSON value is too long.
+;; SingleStore supports the same LENGTH(CAST(x AS CHAR)) pattern as MySQL.
+(defmethod driver.sql/json-field-length :singlestore
+  [_ json-field-identifier]
+  [:length [:cast json-field-identifier :char]])

@@ -53,3 +53,10 @@
 
 ;; SingleStore does not support foreign key constraints.
 (defmethod sql.tx/add-fk-sql :singlestore [& _] nil)
+
+;;; ------------------------------------------ Generated Columns ------------------------------------------
+
+;; SingleStore does not support GENERATED ALWAYS AS columns.
+;; Return nil so tests that create datasets with generated columns
+;; can still create the table (the column simply won't be generated).
+(defmethod sql.tx/generated-column-sql :singlestore [_ _] nil)
