@@ -55,20 +55,37 @@
                    :subname     (make-subname host port db)
                    :user        user
                    :password    password
-                   :useSSL      ssl?}]
+                   :useSSL      ssl?
+                   :connectionAttributes "_connector_name:SingleStore Metabase Plugin"}]
     (sql-jdbc.common/handle-additional-options base-spec details)))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         CSV Upload / insert-into!                                              |
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
-;; The inherited MySQL insert-into! uses LOAD DATA LOCAL INFILE when server-side local_infile=ON,
-;; which requires allowLocalInfile=true on the JDBC connection. Rather than enabling that on every
-;; connection (security risk: a malicious server could request arbitrary local file reads), we
-;; always use the standard INSERT INTO path for SingleStore.
+;; TODO (PLAT-7997): SingleStore does not support local_infile / LOAD DATA LOCAL INFILE.
+
+;; CSV uploads default to INSERT INTO for security (no allowLocalInfile on every connection).
+;; To use LOAD DATA LOCAL INFILE for bulk uploads, add allowLocalInfile=true to the database
+;; connection's additional-options AND ensure server local_infile=ON. When enabled, delegates
+;; to the inherited MySQL insert-into! path which checks local_infile server-side.
+(defn- allow-local-infile-upload?
+  "True when the database connection explicitly opts in via allowLocalInfile=true in additional-options.
+
+  Must read from database `:details`, not the pooled connection spec — pooled specs only expose `:datasource`."
+  [db-id]
+  (driver-api/with-metadata-provider db-id
+    (let [additional-options (get-in (driver-api/database (driver-api/metadata-provider))
+                                     [:details :additional-options])]
+      (= "true"
+         (get (sql-jdbc.common/additional-options->map additional-options :url "=" false)
+              "allowLocalInfile")))))
+
 (defmethod driver/insert-into! :singlestore
   [driver db-id table-name column-names values]
-  ((get-method driver/insert-into! :sql-jdbc) driver db-id table-name column-names values))
+  (if (allow-local-infile-upload? db-id)
+    ((get-method driver/insert-into! :mysql) driver db-id table-name column-names values)
+    ((get-method driver/insert-into! :sql-jdbc) driver db-id table-name column-names values)))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         Session Timezone                                                       |
@@ -96,7 +113,7 @@
    ({:BSON           :type/SerializedJSON
      :GEOGRAPHY      :type/SerializedJSON
      :GEOGRAPHYPOINT :type/SerializedJSON
-     :VECTOR         :type/*
+     :VECTOR         :type/SerializedJSON
      :JSON           :type/JSON}
     (keyword (name database-type)))
    ;; Fall back to parent MySQL type mapping
@@ -115,7 +132,9 @@
 ;;; |                                         SingleStore-Specific Overrides                                         |
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
-;; SingleStore does not support schemas in the same way as MySQL
+;; Exclude SingleStore system schemas from sync. Matches MySQL driver behavior — these schemas
+;; are not user data and syncing them adds noise. User databases remain visible; only system
+;; catalogs (information_schema, memsql, cluster) are hidden.
 (defmethod sql-jdbc.sync/excluded-schemas :singlestore
   [_]
   #{"information_schema" "memsql" "cluster"})
@@ -169,7 +188,8 @@
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
 ;; SingleStore doesn't support CAST(x AS DOUBLE) — only FLOAT, DECIMAL, SIGNED, etc. are valid.
-;; Use the (x + 0.0) trick to implicitly convert to double precision.
+;; The (x + 0.0) trick implicitly converts to double precision. SingleStore also supports
+;; `x :> DOUBLE` cast syntax, but we use standard SQL CAST/+ for MBQL portability with MySQL.
 (defmethod sql.qp/->float :singlestore
   [_driver value]
   (h2x/with-database-type-info [:+ value [:inline 0.0]] "double"))
@@ -250,12 +270,17 @@
   (let [field-type        (:database-type stored-field)
         nfc-path          (:nfc-path stored-field)
         parent-identifier (sql.qp.u/nfc-field->parent-identifier unwrapped-identifier stored-field)
-        key-args          (mapv (fn [x] (if (number? x) (str x) (name x))) (rest nfc-path))
+        key-args          (mapv (fn [x]
+                                  (cond
+                                    (number? x) (str x)
+                                    (string? x) x
+                                    :else       (name x)))
+                                (rest nfc-path))
         json-extract-str  (into [:json_extract_string parent-identifier] key-args)
         normalized-type   (u/lower-case-en (or field-type "text"))]
     (case normalized-type
       "timestamp" [:convert
-                   [:str_to_date json-extract-str "%Y-%m-%dT%T.%fZ"]
+                   (str-to-date "%Y-%m-%dT%T.%fZ" json-extract-str)
                    [:raw "DATETIME"]]
 
       "boolean" json-extract-str
@@ -322,8 +347,9 @@
       "UTC"
       offset)))
 
-;; SingleStore doesn't support session timezone, so use CONVERT_TZ with explicit UTC target
-;; instead of @@session.time_zone
+;; Session timezone is unsupported (set-timezone-sql returns nil), so Metabase treats query
+;; results as UTC. For inline offset datetimes in filters/expressions, we normalize literals
+;; to UTC via CONVERT_TZ so comparisons against UTC-stored values remain consistent.
 (defmethod sql.qp/inline-value [:singlestore OffsetTime]
   [_ t]
   (format "convert_tz('%s', '%s', 'UTC')"

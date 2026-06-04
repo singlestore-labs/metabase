@@ -5,8 +5,6 @@ services:
     hostname: singlestore
     ports:
       - '3306:3306'
-      - '8080:8080'
-      - '9000:9000'
     environment:
       ROOT_PASSWORD: 'metabase'
       SINGLESTORE_LICENSE: ${SINGLESTORE_LICENSE:-}

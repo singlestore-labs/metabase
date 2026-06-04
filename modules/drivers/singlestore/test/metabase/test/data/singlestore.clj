@@ -12,7 +12,7 @@
 (set! *warn-on-reflection* true)
 
 (defn- sanitize-db-name
-  "SingleStore does not allow hyphens or other non-alphanumeric/underscore characters in database names."
+  "Replace hyphens in a SingleStore database name with underscores because SingleStore does not allow hyphens in database names, even when backtick-quoted."
   [db-name]
   (when db-name
     (str/replace db-name #"-" "_")))

@@ -29,7 +29,8 @@ driver:
     - advanced-options-start
     - merge:
         - additional-options
-        - placeholder: "connectTimeout=10000&socketTimeout=60000"
+        - placeholder: "connectTimeout=10000&socketTimeout=60000&allowLocalInfile=true"
+          helper-text: "Add allowLocalInfile=true to enable LOAD DATA LOCAL INFILE for CSV uploads. Use this option only with trusted database servers."
     - default-advanced-options
   connection-properties-include-tunnel-config: true
 init:
