@@ -270,6 +270,7 @@
    :postgres
    :presto-jdbc
    :redshift
+   :singlestore
    :snowflake
    :sparksql
    :sqlite
@@ -289,6 +290,7 @@
    "oracle" [:oracle]
    "presto-jdbc" [:presto-jdbc]
    "redshift" [:redshift]
+   "singlestore" [:singlestore]
    "snowflake" [:snowflake]
    "sparksql" [:sparksql]
    "sqlite" [:sqlite]
