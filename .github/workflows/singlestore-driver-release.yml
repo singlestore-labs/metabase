@@ -3,10 +3,11 @@ name: SingleStore Driver Release
 on:
   push:
     tags:
-      - 'singlestore-driver-v*'
+      - 'v*'
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: singlestore-driver-release-${{ github.ref }}
@@ -38,7 +39,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.ref_name }}"
-          VERSION="${TAG#singlestore-driver-v}"
+          VERSION="${TAG#v}"
           gh release create "${TAG}" \
             --title "SingleStore Metabase Driver v${VERSION}" \
             --generate-notes \
