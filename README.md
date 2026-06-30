@@ -1,81 +1,100 @@
-# Metabase
+# SingleStore driver for Metabase
 
-[Metabase](https://www.metabase.com) is the easy, open-source way for everyone in your company to ask questions and learn from data.
+SingleStore plugin driver for Metabase. The driver inherits from MySQL where behavior matches and uses the official SingleStore JDBC client.
 
-![Metabase Product Screenshot](https://www.metabase.com/images/metabase-product-screenshot-updated.png)
+Metabase Cloud does not support community drivers. See [Community drivers](https://www.metabase.com/docs/latest/developers-guide/community-drivers).
 
-[![Latest Release](https://img.shields.io/github/release/metabase/metabase.svg?label=latest%20release)](https://github.com/metabase/metabase/releases)
-[![codecov](https://codecov.io/gh/metabase/metabase/branch/master/graph/badge.svg)](https://codecov.io/gh/metabase/metabase)
-![Docker Pulls](https://img.shields.io/docker/pulls/metabase/metabase)
+## Install (for self hosted metabase)
 
-## Get started
+1. Download `singlestore.metabase-driver.jar` from [GitHub Releases](https://github.com/singlestore-labs/metabase/releases) (tags named `v*`, e.g. `v1.0.0`).
+2. Copy the JAR into your Metabase `plugins/` directory (or set `MB_PLUGINS_DIR`).
+3. Restart Metabase.
+4. **Admin settings → Databases → Add database → SingleStore**.
 
-The easiest way to get started with Metabase is to sign up for a free trial of [Metabase Cloud](https://store.metabase.com/checkout).
+Requires a self-hosted Metabase build compatible with the driver release notes.
 
-You get expert support, backups, upgrades, an SMTP server, SSL certificate, SoC2 Type 2 security auditing, and more (plus your money goes toward improving a major open-source project). Check out our quick overview of [cloud vs self-hosting](https://www.metabase.com/docs/latest/cloud/cloud-vs-self-hosting). If you need to, you can always switch to [self-hosting](https://www.metabase.com/docs/latest/installation-and-operation/installing-metabase) Metabase at any time (or vice versa).
+## Connection
 
-## Key Features
+| Field | Notes |
+|-------|--------|
+| Host / Port | Default port `3306` |
+| Database name | Required for sync |
+| SSL / SSH tunnel | Supported via standard Metabase connection UI |
+| Additional options | e.g. `connectTimeout=10000&socketTimeout=60000` |
 
-- [Set up in five minutes](https://www.metabase.com/docs/latest/configuring-metabase/setting-up-metabase) (we're not kidding), or have us [host Metabase for you](https://www.metabase.com/cloud/) so you don't even need to think about it.
-- Let anyone on your team [ask questions](https://www.metabase.com/docs/latest/questions/introduction) without knowing SQL.
-- Use the [SQL editor](https://www.metabase.com/docs/latest/questions/native-editor/writing-sql) for more complex queries.
-- Ask AI: [Metabot](https://www.metabase.com/docs/latest/ai/metabot) gives you answers you can trust, helps you write queries, and more. Or build your own [AI agent](https://www.metabase.com/docs/latest/ai/agent-api) to query your data.
-- Build handsome, interactive [dashboards](https://www.metabase.com/docs/latest/dashboards/introduction) with filters, auto-refresh, fullscreen, custom click behavior, and more.
-- Use [documents](https://www.metabase.com/docs/latest/documents/introduction) for long-form data analysis, and invite people to comment.
-- [Transform](https://www.metabase.com/docs/latest/data-studio/transforms/transforms-overview) raw data into analytics-ready tables, track down broken dependencies, and define canonical metrics in Metabase's [Data Studio](https://www.metabase.com/docs/latest/data-studio/overview).
-- Set up [alerts on your data](https://www.metabase.com/docs/latest/questions/alerts), or schedule [dashboard subscriptions](https://www.metabase.com/docs/latest/dashboards/subscriptions) to email, Slack, or even a webhook.
-- Curate content in a [Library](https://www.metabase.com/docs/latest/data-studio/library), and [version your work with Git](https://www.metabase.com/docs/latest/installation-and-operation/remote-sync).
-- [Embed Metabase in your app](https://www.metabase.com/docs/latest/embedding/introduction), with components for charts, dashboards, data browser, AI chat, and more. You can even put [an entire Metabase](https://www.metabase.com/docs/latest/embedding/interactive-embedding) in your app.
-- Set granular [permissions](https://www.metabase.com/docs/latest/permissions/introduction) that work for both internal teams and embedded analytics, whether you co-locate your customer data, or give each customer their own database.
-- Dark mode, content translations, and way more stuff than we can list here.
 
-Take a [tour of Metabase](https://www.metabase.com/learn/metabase-basics/overview/tour-of-metabase).
+## Build from source
 
-## Supported databases
+```bash
+./bin/build-driver.sh singlestore
+clojure -X:build:build/verify-driver :driver :singlestore
+```
 
-- [Officially supported databases](./docs/databases/connecting.md#connecting-to-supported-databases)
-- [Community drivers](./docs/developers-guide/community-drivers.md)
+Output: `resources/modules/singlestore.metabase-driver.jar`
 
-## Installation
+## Test locally
 
-Metabase can be run just about anywhere. Check out our [Installation Guides](https://www.metabase.com/docs/latest/installation-and-operation/installing-metabase).
+```bash
+docker compose -f modules/drivers/singlestore/docker-compose.yml up -d
 
-## Documentation
+DRIVERS=singlestore \
+MB_SINGLESTORE_TEST_HOST=localhost \
+MB_SINGLESTORE_TEST_PORT=3306 \
+MB_SINGLESTORE_TEST_USER=root \
+MB_SINGLESTORE_TEST_PASSWORD=metabase \
+clojure -X:dev:drivers:drivers-dev:test \
+  :only-tags '[:mb/driver-tests]'
+```
 
-The [Metabase handbook](https://www.metabase.com/docs/latest/).
+## Release process
 
-## Contributing
+Releases are fully automated. The only step required is to push a version tag.
 
-To contribute to Metabase, see our [Developer docs](./docs/developers-guide/start.md).
+Use semantic versioning with a `v` prefix:
 
-## Extending Metabase
+```
+v<major>.<minor>.<patch>[-<pre-release>]
+```
 
-Hit our API to integrate analytics. Check out our guide, [Working with the Metabase API](https://www.metabase.com/learn/metabase-basics/administration/administration-and-operation/metabase-api).
+Examples:
 
-## Internationalization
+- Stable: `v1.0.0`, `v1.2.3`
+- Pre-release: `v1.0.0-alpha.1`, `v1.0.0-rc.1`
 
-We want Metabase to be available in as many languages as possible. See which translations are available and help contribute to internationalization using our project over at [Crowdin](https://crowdin.com/project/metabase-i18n). You can also check out our [policies on translations](https://www.metabase.com/docs/latest/administration-guide/localization.html).
+```bash
+# Stable release
+git tag v1.0.1
+git push origin v1.0.1
 
-## Security Disclosure
+# Pre-release
+git tag v1.0.1-alpha.1
+git push origin v1.0.1-alpha.1
+```
 
-See [SECURITY.md](./SECURITY.md) for details.
+The release version is derived from the tag (the leading `v` is stripped). Consumers can install a specific version by downloading `singlestore.metabase-driver.jar` from the matching [GitHub Release](https://github.com/singlestore-labs/metabase/releases) (for example, the release created for tag `v1.0.1`).
 
-## License
+Pushing a tag triggers the [SingleStore Driver Release workflow](../../.github/workflows/singlestore-driver-release.yml), which builds and verifies the driver JAR, then creates a GitHub Release with auto-generated release notes and attaches `singlestore.metabase-driver.jar`.
 
-This repository contains the source code for both the Open Source edition of Metabase, released under the AGPL, as well as the [commercial editions of Metabase](https://www.metabase.com/pricing/), which are released under the Metabase Commercial Software License.
+Before tagging, merge your changes to `master` and confirm the **SingleStore Driver CI** workflow has passed on that commit.
 
-See [LICENSE.txt](./LICENSE.txt) for details.
+## Driver versioning
 
-Unless otherwise noted, all files © 2026 Metabase, Inc.
+The driver uses **its own semantic version**, independent of the Metabase version in this fork.
 
-## Community
+| What | Where | Example |
+|------|--------|---------|
+| **Release tag** | Git tag / GitHub Release | `v1.0.1` |
+| **Driver version (in JAR)** | `resources/metabase-plugin.yaml` → `info.version` | `1.0.1` |
+| **Metabase compatibility** | Release notes / README | Built against Metabase `v0.57.x` at commit `abc123` |
 
-- [Discourse](https://discourse.metabase.com/)
-- [Twitter](https://x.com/metabase)
-- [LinkedIn](https://www.linkedin.com/company/metabase/)
-- [YouTube](https://www.youtube.com/@metabasedata)
-- [Reddit](https://www.reddit.com/r/Metabase/)
+The git tag names the release and triggers CI. The version Metabase displays for the plugin comes from `metabase-plugin.yaml`, which is **not** updated automatically when you push a tag. Before tagging, set `info.version` in `modules/drivers/singlestore/resources/metabase-plugin.yaml` to match the release (without the `v` prefix):
 
-## Metabase Experts
+```bash
+# Example: releasing v1.0.1
+# 1. Set info.version to 1.0.1 in metabase-plugin.yaml, commit to master
+# 2. Tag and push
+git tag v1.0.1
+git push origin v1.0.1
+```
 
-If you’d like more technical resources to set up your data stack with Metabase, connect with a [Metabase Expert](https://www.metabase.com/partners/?utm_source=readme&utm_medium=metabase-expetrs&utm_campaign=readme).
+Metabase and the driver do not share one version number. A driver `v1.0.1` may be built from a fork based on Metabase `v0.57.5`. Document the supported Metabase version range in each GitHub Release so users install a JAR that matches their Metabase build.

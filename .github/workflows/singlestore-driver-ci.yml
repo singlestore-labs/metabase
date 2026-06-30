@@ -54,15 +54,9 @@ jobs:
         uses: ./.github/actions/prepare-backend
 
       - name: Start SingleStore in Docker
-        uses: hoverkraft-tech/compose-action@v2.0.0
-        with:
-          compose-file: modules/drivers/singlestore/docker-compose.yml
-          down-flags: "--volumes"
-          services: |
-            singlestore
-
-      - name: Wait for SingleStore to be ready
         run: |
+          docker compose -f modules/drivers/singlestore/docker-compose.yml up -d singlestore
+
           echo "Waiting for SingleStore to start..."
           for i in $(seq 1 60); do
             if docker exec metabase-driver-singlestore singlestore -uroot -pmetabase -e "SELECT 1" >/dev/null 2>&1; then
@@ -93,3 +87,7 @@ jobs:
           name: singlestore-test-results
           path: target/junit/
           retention-days: 7
+
+      - name: Stop SingleStore
+        if: always()
+        run: docker compose -f modules/drivers/singlestore/docker-compose.yml down --volumes
