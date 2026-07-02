@@ -1,0 +1,93 @@
+name: SingleStore Driver CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: singlestore-ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-verify:
+    name: Build and verify driver JAR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare back-end environment
+        uses: ./.github/actions/prepare-backend
+
+      - name: Build SingleStore driver
+        run: ./bin/build-driver.sh singlestore
+
+      - name: Verify SingleStore driver
+        run: clojure -X:build:build/verify-driver :driver :singlestore
+
+      - name: Confirm JAR artifact exists
+        run: test -f resources/modules/singlestore.metabase-driver.jar
+
+  singlestore-tests:
+    name: SingleStore integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: build-and-verify
+    env:
+      CI: "true"
+      DRIVERS: singlestore
+      MB_SINGLESTORE_TEST_HOST: localhost
+      MB_SINGLESTORE_TEST_PORT: 3306
+      MB_SINGLESTORE_TEST_USER: root
+      MB_SINGLESTORE_TEST_PASSWORD: metabase
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare back-end environment
+        uses: ./.github/actions/prepare-backend
+
+      - name: Start SingleStore in Docker
+        run: |
+          docker compose -f modules/drivers/singlestore/docker-compose.yml up -d singlestore
+
+          echo "Waiting for SingleStore to start..."
+          for i in $(seq 1 60); do
+            if docker exec metabase-driver-singlestore singlestore -uroot -pmetabase -e "SELECT 1" >/dev/null 2>&1; then
+              echo "SingleStore is ready!"
+              exit 0
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 5
+          done
+          echo "::error::SingleStore failed to start within 300 seconds"
+          exit 1
+
+      - name: Run SingleStore driver unit tests
+        run: |
+          clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test \
+            :only '[metabase.driver.singlestore-test]'
+
+      - name: Run SingleStore driver integration tests
+        run: |
+          clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test \
+            :only-tags '[:mb/driver-tests]' \
+            :exclude-tags '[:mb/upload-tests :mb/transforms-python-test]'
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: singlestore-test-results
+          path: target/junit/
+          retention-days: 7
+
+      - name: Stop SingleStore
+        if: always()
+        run: docker compose -f modules/drivers/singlestore/docker-compose.yml down --volumes
