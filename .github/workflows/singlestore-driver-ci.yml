@@ -75,10 +75,7 @@ jobs:
             :only '[metabase.driver.singlestore-test]'
 
       - name: Run SingleStore driver integration tests
-        run: |
-          clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test \
-            :only-tags '[:mb/driver-tests]' \
-            :exclude-tags '[:mb/upload-tests :mb/transforms-python-test]'
+        run: clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:singlestore-ci-test
 
       - name: Upload test results on failure
         if: failure()
