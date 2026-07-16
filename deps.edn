@@ -494,6 +494,12 @@
     "modules/drivers/starburst/test"
     "modules/drivers/vertica/test"]}
 
+  ;; SingleStore driver CI tests with alpha exclusions (see modules/drivers/singlestore/resources/singlestore-ci-exclusions.edn)
+  ;;
+  ;;    clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:singlestore-ci-test
+  :singlestore-ci-test
+  {:exec-fn metabase.driver.singlestore.ci-test/run}
+
 ;;; Linters
 
   ;; clojure -M:kondo --lint src test

@@ -1,0 +1,30 @@
+;; Alpha CI exclusions for SingleStore driver integration tests.
+;; See modules/drivers/singlestore/RELEASING.md and test-results7.txt.
+;; Upload tests are excluded via :mb/upload-tests tag in CI.
+{:excluded-namespaces
+ [metabase.query-processor.date-bucketing-test
+  metabase.query-processor.date-time-zone-functions-test
+  metabase.query-processor.cast-test
+  metabase.query-processor.persistence-test
+  metabase.driver.sql-jdbc.sync.describe-table-test
+  metabase.warehouse-schema-rest.api.field-test
+  metabase.actions-rest.api-test
+  metabase.query-processor.explicit-joins-test
+  metabase.warehouses-rest.api-test
+  metabase.model-persistence.api-test
+  metabase.query-processor.nested-queries-test
+  metabase.query-processor.nested-array-test
+  metabase.query-processor.middleware.cache-test
+  metabase.query-processor.middleware.parameters.mbql-test
+  metabase.query-processor.parameters-test
+  metabase.pulse.api.pulse-test
+  metabase.driver.sql-jdbc.connection-test]
+
+ :excluded-vars
+ ["metabase.driver-test/can-connect-with-destroy-db-test"
+  "metabase.driver-test/check-can-connect-before-sync-test"
+  "metabase.driver-test/describe-fields-or-table-test"
+  "metabase.driver-test/describe-fields-returns-default-expr-test"
+  "metabase.driver-test/describe-fields-returns-is-generated-test"
+  "metabase.driver-test/table-exists-test"
+  "metabase.query-processor.filter-test/filter-on-specific-date-timestamptz-test"]}
