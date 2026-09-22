@@ -9,9 +9,10 @@
 (set! *warn-on-reflection* true)
 
 (defn- load-exclusions []
-  (-> (io/resource "singlestore-ci-exclusions.edn")
-      io/reader
-      edn/read))
+  (let [resource (io/resource "singlestore-ci-exclusions.edn")]
+    (when-not resource
+      (throw (ex-info "Missing singlestore-ci-exclusions.edn on classpath" {})))
+    (edn/read-string (slurp resource))))
 
 (defn- var-name ^String [v]
   (format "%s/%s" (-> v meta :ns ns-name) (-> v meta :name name)))

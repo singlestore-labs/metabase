@@ -1,4 +1,4 @@
-name: SingleStore Driver CI
+name: SingleStore tests
 
 on:
   push:
