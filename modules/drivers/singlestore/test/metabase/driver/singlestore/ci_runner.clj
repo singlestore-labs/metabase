@@ -1,5 +1,8 @@
-(ns metabase.driver.singlestore.ci-test
-  "CI entrypoint for SingleStore `:mb/driver-tests` with alpha exclusions."
+(ns metabase.driver.singlestore.ci-runner
+  "CI entrypoint for SingleStore `:mb/driver-tests` with alpha exclusions.
+
+  Lives under `test` rather than `src` because it depends on the test runner, which is not on the classpath when the
+  driver JAR is built."
   (:require
    [clojure.edn :as edn]
    [clojure.java.io :as io]
