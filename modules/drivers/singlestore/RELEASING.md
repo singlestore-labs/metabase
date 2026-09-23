@@ -57,7 +57,7 @@ Metabase and the driver do not share one version number. A driver `v1.0.1` may b
 CI runs unit tests plus a curated integration suite:
 
 ```bash
-clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:singlestore-ci-test
+clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test:singlestore-ci-test
 ```
 
 This runs `:mb/driver-tests` while excluding:
