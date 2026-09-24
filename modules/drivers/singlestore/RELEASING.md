@@ -51,3 +51,28 @@ git push origin v1.0.1
 ```
 
 Metabase and the driver do not share one version number. A driver `v1.0.1` may be built from a fork based on Metabase `v0.57.5`. Document the supported Metabase version range in each GitHub Release so users install a JAR that matches their Metabase build.
+
+## CI integration tests
+
+CI runs unit tests plus a curated integration suite:
+
+```bash
+clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test:singlestore-ci-test
+```
+
+This runs `:mb/driver-tests` while excluding:
+
+- `:mb/upload-tests` and `:mb/transforms-python-test` (tags)
+- Namespaces and individual tests listed in `test/singlestore-ci-exclusions.edn` (alpha gaps: timezone, casts, sync, persistence, etc.)
+
+The runner itself lives in `test/metabase/driver/singlestore/ci_runner.clj`. Keep it under `test`: anything in `src` or `resources` gets compiled into the driver JAR, where the test runner is not on the classpath.
+
+To run the full driver suite locally (expect failures until gaps are fixed):
+
+```bash
+DRIVERS=singlestore MB_SINGLESTORE_TEST_*=... \
+clojure -X:dev:ee:ee-dev:drivers:drivers-dev:test \
+  :only-tags '[:mb/driver-tests]'
+```
+
+Remove entries from `singlestore-ci-exclusions.edn` as failures are fixed.
