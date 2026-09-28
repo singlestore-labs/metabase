@@ -1,50 +1,42 @@
 ;; Alpha CI exclusions for SingleStore driver integration tests.
 ;; See modules/drivers/singlestore/RELEASING.md.
 ;; Upload tests are excluded via :mb/upload-tests tag in CI.
+;; Prefer :excluded-vars over whole namespaces when only a few tests fail.
 {:excluded-namespaces
- [metabase.query-processor.date-bucketing-test
-  metabase.query-processor.date-time-zone-functions-test
-  metabase.query-processor.cast-test
-  metabase.query-processor.persistence-test
-  metabase.driver.sql-jdbc.sync.describe-table-test
-  metabase.warehouse-schema-rest.api.field-test
-  metabase.actions-rest.api-test
-  metabase.query-processor.explicit-joins-test
-  metabase.warehouses-rest.api-test
-  metabase.model-persistence.api-test
-  metabase.query-processor.nested-queries-test
-  metabase.query-processor.nested-array-test
-  metabase.query-processor.middleware.cache-test
-  metabase.query-processor.middleware.parameters.mbql-test
-  metabase.query-processor.parameters-test
-  metabase.pulse.api.pulse-test
-  metabase.driver.sql-jdbc.connection-test
-  ;; EE workspaces isolation (GRANT/CREATE USER, no mysql system DB, workspace never ready)
+ [;; EE workspaces isolation (GRANT/CREATE USER, no mysql system DB, workspace never ready)
   metabase-enterprise.workspaces.api-test
   metabase-enterprise.workspaces.execute-test
   metabase-enterprise.workspaces.isolation-test
   ;; Impersonation uses GRANT to auto-create users; SingleStore rejects that
-  metabase-enterprise.impersonation.driver-test
-  ;; Jetty test server URI is null in this suite (embed/public/notify HTTP)
-  metabase.embedding-rest.api.embed-test]
+  metabase-enterprise.impersonation.driver-test]
 
  :excluded-vars
- ["metabase.driver-test/can-connect-with-destroy-db-test"
-  "metabase.driver-test/check-can-connect-before-sync-test"
-  "metabase.driver-test/describe-fields-or-table-test"
+ [;; Sync metadata
   "metabase.driver-test/describe-fields-returns-default-expr-test"
   "metabase.driver-test/describe-fields-returns-is-generated-test"
-  "metabase.driver-test/table-exists-test"
+  ;; Timestamptz / timezone (session TZ unsupported on SingleStore)
   "metabase.query-processor.filter-test/filter-on-specific-date-timestamptz-test"
-  "metabase.query-processor.filter-test/ends-with-escaped-char-in-literal-test"
+  ;; Nested query + month-bucket join on subqueries (#18502, #18512)
+  "metabase.query-processor.explicit-joins-test/join-against-same-table-as-source-query-source-table-test"
+  "metabase.query-processor.explicit-joins-test/joining-nested-queries-with-same-aggregation-test"
+  ;; Nested queries (4 failing vars in namespace)
+  "metabase.query-processor.nested-queries-test/basic-test"
+  "metabase.query-processor.nested-queries-test/nested-query-with-joins-test"
+  "metabase.query-processor.nested-queries-test/two-of-the-same-aggregations-test"
+  "metabase.query-processor.nested-queries-test/space-names-question-test"
+  ;; Array type / json_array UDF not available
+  "metabase.query-processor.nested-array-test/nested-array-query-test"
+  "metabase.query-processor.middleware.cache-test/array-query-can-be-cached-test"
+  ;; MBQL / native parameters
+  "metabase.query-processor.middleware.parameters.mbql-test/operations-e2e-test-2"
+  "metabase.query-processor.parameters-test/better-error-when-parameter-mismatch"
+  ;; EE workspaces REST (requires workspace infra)
+  "metabase.warehouses-rest.api-test/workspace-permission-endpoint-test"
   ;; Subquery ORDER BY not preserved (rows swapped)
   "metabase.query-processor.expressions-test/nested-expressions-with-existing-names-test"
   ;; Depends on model persistence
   "metabase-enterprise.sandbox.query-processor.middleware.sandboxing-test/persistence-disabled-when-sandboxed-test"
-  ;; Same Jetty getURI() nil as embed-test
-  "metabase.dashboards-rest.api-test/dashboard-card-query-export-format-test"
+  ;; Jetty test server URI is null in this suite (public-sharing HTTP)
   "metabase.public-sharing-rest.api-test/make-sure-it-also-works-with-the-forwarded-url"
-  "metabase.sync.api.notify-test/not-found-test"
   ;; No ORDER BY; SingleStore does not return rows in insert/id order
-  "metabase.driver.common-test/json-decimals-keep-precision-test"
   "metabase-enterprise.database-routing.e2e-test/db-routing-e2e-test"]}
