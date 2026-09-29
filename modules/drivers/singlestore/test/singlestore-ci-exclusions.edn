@@ -19,10 +19,6 @@
   metabase.query-processor.parameters-test
   metabase.pulse.api.pulse-test
   metabase.driver.sql-jdbc.connection-test
-  ;; EE workspaces isolation (GRANT/CREATE USER, no mysql system DB, workspace never ready)
-  metabase-enterprise.workspaces.api-test
-  metabase-enterprise.workspaces.execute-test
-  metabase-enterprise.workspaces.isolation-test
   ;; Impersonation uses GRANT to auto-create users; SingleStore rejects that
   metabase-enterprise.impersonation.driver-test
   ;; Jetty test server URI is null in this suite (embed/public/notify HTTP)

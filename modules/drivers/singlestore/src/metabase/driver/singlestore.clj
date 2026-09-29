@@ -18,6 +18,7 @@
    [metabase.driver.sql.query-processor :as sql.qp]
    [metabase.driver.sql.query-processor.util :as sql.qp.u]
    [metabase.driver.sql.util :as sql.u]
+   [metabase.driver.util :as driver.u]
    [metabase.util :as u]
    [metabase.util.date-2 :as u.date]
    [metabase.util.honey-sql-2 :as h2x]
@@ -405,3 +406,76 @@
 (defmethod driver.sql/json-field-length :singlestore
   [_ json-field-identifier]
   [:length [:cast json-field-identifier :char]])
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         Workspace Isolation                                                    |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore inherits MySQL workspace isolation but has no `mysql` system database.
+;; User existence checks must use information_schema.users instead of mysql.user.
+;; GRANT statements require a fully qualified database.table when no default DB is selected.
+
+(defn- singlestore-user-exists?
+  "Check if a SingleStore user exists."
+  [conn username]
+  (seq (jdbc/query conn ["SELECT 1 FROM information_schema.users WHERE user = ?" username])))
+
+(defn- source-database-name
+  "Return the Metabase-connected database name from database details."
+  [database]
+  (let [details (:details database)]
+    (or (:db details) (:dbname details))))
+
+(defmethod driver/init-workspace-isolation! :singlestore
+  [_driver database workspace]
+  (let [db-name          (driver.u/workspace-isolation-namespace-name workspace)
+        user             (driver.u/workspace-isolation-user-name workspace)
+        password         (driver.u/random-workspace-password)
+        escaped-password (sql.u/escape-sql password :ansi)]
+    (jdbc/with-db-transaction [t-conn (sql-jdbc.conn/db->pooled-connection-spec (:id database))]
+      (let [user-sql (if (singlestore-user-exists? t-conn user)
+                       (format "ALTER USER `%s`@'%%' IDENTIFIED BY '%s'"
+                               user escaped-password)
+                       (format "CREATE USER `%s`@'%%' IDENTIFIED BY '%s'"
+                               user escaped-password))]
+        (with-open [^Statement stmt (.createStatement ^Connection (:connection t-conn))]
+          (doseq [sql [(format "CREATE DATABASE IF NOT EXISTS `%s`" db-name)
+                       user-sql
+                       (format "GRANT ALL PRIVILEGES ON `%s`.* TO `%s`@'%%'" db-name user)]]
+            (.addBatch ^Statement stmt ^String sql))
+          (.executeBatch ^Statement stmt))))
+    {:schema           db-name
+     :database_details {:user user, :password password :db db-name}}))
+
+(defmethod driver/destroy-workspace-isolation! :singlestore
+  [_driver database workspace]
+  (let [db-name  (:schema workspace)
+        username (-> workspace :database_details :user)]
+    (jdbc/with-db-transaction [t-conn (sql-jdbc.conn/db->pooled-connection-spec (:id database))]
+      (with-open [^Statement stmt (.createStatement ^Connection (:connection t-conn))]
+        (doseq [sql (cond-> [(format "DROP DATABASE IF EXISTS `%s`" db-name)]
+                      (singlestore-user-exists? t-conn username)
+                      (conj (format "DROP USER IF EXISTS `%s`@'%%'" username)))]
+          (.addBatch ^Statement stmt ^String sql))
+        (.executeBatch ^Statement stmt)))))
+
+(defmethod driver/grant-workspace-read-access! :singlestore
+  [_driver database workspace tables]
+  (let [username   (-> workspace :database_details :user)
+        qu         (sql.u/quote-name :mysql :field username)
+        default-db (source-database-name database)
+        sqls       (for [{db :schema, t :name} tables]
+                     (let [db-name (or (not-empty db) default-db)]
+                       (if db-name
+                         (format "GRANT SELECT ON %s.%s TO %s@'%%'"
+                                 (sql.u/quote-name :mysql :schema db-name)
+                                 (sql.u/quote-name :mysql :table t)
+                                 qu)
+                         (format "GRANT SELECT ON %s TO %s@'%%'"
+                                 (sql.u/quote-name :mysql :table t)
+                                 qu))))]
+    (jdbc/with-db-transaction [t-conn (sql-jdbc.conn/db->pooled-connection-spec (:id database))]
+      (with-open [^Statement stmt (.createStatement ^Connection (:connection t-conn))]
+        (doseq [sql sqls]
+          (.addBatch ^Statement stmt ^String sql))
+        (.executeBatch ^Statement stmt)))))
