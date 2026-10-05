@@ -8,6 +8,7 @@
    [java-time.api :as t]
    [metabase.driver :as driver]
    [metabase.driver-api.core :as driver-api]
+   [metabase.driver.ddl.interface :as ddl.i]
    [metabase.driver.sql :as driver.sql]
    [metabase.driver.sql-jdbc.common :as sql-jdbc.common]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
@@ -188,11 +189,36 @@
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
 ;; SingleStore doesn't support CAST(x AS DOUBLE) — only FLOAT, DECIMAL, SIGNED, etc. are valid.
-;; The (x + 0.0) trick implicitly converts to double precision. SingleStore also supports
-;; `x :> DOUBLE` cast syntax, but we use standard SQL CAST/+ for MBQL portability with MySQL.
+;; Adding the DOUBLE literal `0e0` implicitly converts to double precision. A DECIMAL literal like
+;; `0.0` must not be used: the result takes its scale, so '+123.88' + 0.0 comes back as 123.9.
 (defmethod sql.qp/->float :singlestore
   [_driver value]
-  (h2x/with-database-type-info [:+ value [:inline 0.0]] "double"))
+  (h2x/with-database-type-info [:+ value [:raw "0e0"]] "double"))
+
+(defn- double-literal
+  "SQL literal for `x` in exponent notation, which SingleStore types as DOUBLE rather than DECIMAL."
+  [x]
+  (let [s (str (double x))]
+    [:raw (if (str/includes? s "E") s (str s "e0"))]))
+
+;; `coerce-float` turns constants into inline literals such as `123.88`, which SingleStore types as DECIMAL with the
+;; literal's scale. The plan cache parameterizes literals and reuses the first execution's result type, so after
+;; running `123.0` an otherwise identical query with `123.88` returns 123.9. DOUBLE literals don't have that problem.
+(defmethod sql.qp/->honeysql [:singlestore :float]
+  [driver [_ value]]
+  (let [coerced   (sql.qp/coerce-float driver (sql.qp/->honeysql driver value))
+        unwrapped (h2x/unwrap-typed-honeysql-form coerced)]
+    (if (and (vector? unwrapped)
+             (= :inline (first unwrapped))
+             (number? (second unwrapped)))
+      (h2x/with-database-type-info (double-literal (second unwrapped)) "double")
+      coerced)))
+
+;; CAST(x AS SIGNED) rounds half to even on SingleStore (90.5 -> 90), whereas MySQL rounds half away
+;; from zero. FLOOR(x + 0.5) gives consistent round-half-up semantics.
+(defmethod sql.qp/->integer :singlestore
+  [driver value]
+  (h2x/maybe-cast (sql.qp/integer-dbtype driver) [:floor [:+ value [:inline 0.5]]]))
 
 ;; SingleStore doesn't support CONVERT(x, TEXT) - must use CHAR instead
 ;; This is used when Metabase needs to cast values to text (e.g., during fingerprinting)
@@ -237,6 +263,16 @@
         [:date [:concat (h2x/year expr) (h2x/literal "-01-01")]]
         "date")
        (temporal-cast (h2x/database-type expr))))
+
+;; MySQL truncates :minute/:hour with STR_TO_DATE(DATE_FORMAT(...)). On SingleStore, STR_TO_DATE with a
+;; time part returns a string padded with NUL characters to the DATETIME(6) width, so use DATE_TRUNC.
+(doseq [unit [:minute :hour]]
+  (defmethod sql.qp/date [:singlestore unit]
+    [driver unit expr]
+    (if (= (h2x/database-type expr) "time")
+      ((get-method sql.qp/date [:mysql unit]) driver unit expr)
+      (->> (h2x/with-database-type-info [:date_trunc (h2x/literal (name unit)) expr] "datetime")
+           (temporal-cast (h2x/database-type expr))))))
 
 ;; Override :week because MySQL's implementation hardcodes :mysql in adjust-start-of-week.
 ;; We need to pass :singlestore so the offset is computed using our db-start-of-week.
@@ -395,6 +431,27 @@
           (sql-jdbc.sync.common/reducible-results
            #(.getPrimaryKeys metadata catalog (:schema table) (:name table))
            (fn [^ResultSet rs] #(.getString rs "COLUMN_NAME"))))))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         Model Persistence                                                       |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; SingleStore resolves unqualified table names in `CREATE TABLE cache.t AS SELECT ... FROM t2` against the database of
+;; the table being created (the cache schema) rather than the connection's default database. While compiling the
+;; model query for a persistence refresh, qualify source tables with the source database name.
+(def ^:private ^:dynamic *persistence-source-db* nil)
+
+(defmethod sql.qp/->honeysql [:singlestore :metadata/table]
+  [driver table]
+  (if-let [db-name *persistence-source-db*]
+    (sql.qp/->honeysql driver (h2x/identifier :table db-name (:name table)))
+    ((get-method sql.qp/->honeysql [:sql :metadata/table]) driver table)))
+
+(defmethod ddl.i/refresh! :singlestore
+  [driver database definition dataset-query]
+  (binding [*persistence-source-db* (let [details (:details database)]
+                                      (or (:db details) (:dbname details)))]
+    ((get-method ddl.i/refresh! :mysql) driver database definition dataset-query)))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         JSON Field Length                                                        |

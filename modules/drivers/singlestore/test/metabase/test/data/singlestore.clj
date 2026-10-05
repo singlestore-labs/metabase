@@ -5,6 +5,7 @@
    (:singlestore -> :mysql -> :sql-jdbc/test-extensions)."
   (:require
    [clojure.string :as str]
+   [metabase.driver :as driver]
    [metabase.test :as mt]
    [metabase.test.data.interface :as tx]
    [metabase.test.data.sql :as sql.tx]))
@@ -16,6 +17,16 @@
   [db-name]
   (when db-name
     (str/replace db-name #"-" "_")))
+
+;;; ------------------------------------------ Test-only features ------------------------------------------
+
+;; Results are returned in the database timezone, not the JVM timezone.
+(defmethod driver/database-supports? [:singlestore :test/jvm-timezone-setting]
+  [_driver _feature _db] false)
+
+;; SingleStore sets `:pk?` via its own `get-table-pks` even though it does not support `:metadata/key-constraints`.
+(defmethod driver/database-supports? [:singlestore :metabase.driver.sql-jdbc.sync.describe-table-test/describe-pks]
+  [_driver _feature _db] true)
 
 ;;; ------------------------------------------ Database Name Handling ------------------------------------------
 

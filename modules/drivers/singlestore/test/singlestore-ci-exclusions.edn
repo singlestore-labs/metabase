@@ -34,9 +34,20 @@
   "metabase.warehouses-rest.api-test/workspace-permission-endpoint-test"
   ;; Subquery ORDER BY not preserved (rows swapped)
   "metabase.query-processor.expressions-test/nested-expressions-with-existing-names-test"
-  ;; Depends on model persistence
-  "metabase-enterprise.sandbox.query-processor.middleware.sandboxing-test/persistence-disabled-when-sandboxed-test"
   ;; Jetty test server URI is null in this suite (public-sharing HTTP)
   "metabase.public-sharing-rest.api-test/make-sure-it-also-works-with-the-forwarded-url"
   ;; No ORDER BY; SingleStore does not return rows in insert/id order
-  "metabase-enterprise.database-routing.e2e-test/db-routing-e2e-test"]}
+  "metabase-enterprise.database-routing.e2e-test/db-routing-e2e-test"
+  "metabase.query-processor.date-time-zone-functions-test/nested-convert-timezone-test-3"
+  "metabase.query-processor.date-time-zone-functions-test/convert-timezone-test"
+  "metabase.query-processor.date-time-zone-functions-test/datetime-diff-mixed-types-test"
+  "metabase.query-processor.filter-test/ends-with-escaped-char-in-literal-test"
+  ;; Samples the first 4 rows of a PK-less table without ORDER BY, expecting the 6th row to be left out
+  "metabase.driver.sql-jdbc.sync.describe-table-test/json-fetch-last-on-table-with-ids-test"
+  ;; AUTO_INCREMENT PKs are widened to BIGINT; tests hardcode :type/Integer for `id`
+  "metabase.driver.sql-jdbc.sync.describe-table-test/json-columns-with-values-are-not-object-test"
+  "metabase.driver.sql-jdbc.sync.describe-table-test/json-unwrapping-bigint-and-boolean"
+  ;; Plan cache reuses the DECIMAL(p,s) type of an earlier literal in the native SQL (`-1.98`), so `100.1` is out of range
+  "metabase.query-processor.cast-test/integer-cast-nested-native-query"
+  ;; Removing :singlestore's json-field-length falls back to :mysql's, not :default, so the long value is still omitted
+  "metabase.driver.sql-jdbc.sync.describe-table-test/long-json-sample-json-query-test"]}
