@@ -413,13 +413,28 @@
 
 ;; SingleStore inherits MySQL workspace isolation but has no `mysql` system database.
 ;; User existence checks must use information_schema.users instead of mysql.user.
-;; GRANT statements require a fully qualified database.table when no default DB is selected.
+;; GRANT statements always qualify tables as database.table. SingleStore rejects an unqualified
+;; table with ERROR 1046 (No database selected) when the session has no default database.
+;;
+;; Helios rejects `GRANT ALL PRIVILEGES`: it implies cluster-wide permissions that Helios
+;; does not allow. These are the database-scoped privileges from the Helios permissions
+;; matrix. Cluster-only privileges (PROCESS, SHOW METADATA, CREATE USER, OUTBOUND, and
+;; resource-pool privileges) cannot be granted on `database.*`.
+(def ^:private workspace-db-privileges
+  (str "SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, INDEX, ALTER, "
+       "CREATE TEMPORARY TABLES, LOCK TABLES, CREATE VIEW, SHOW VIEW, ALTER VIEW, DROP VIEW, "
+       "BACKUP, RELOAD, EXECUTE, CREATE ROUTINE, ALTER ROUTINE, SHOW ROUTINE, "
+       "CREATE PIPELINE, DROP PIPELINE, ALTER PIPELINE, START PIPELINE, SHOW PIPELINE, "
+       "CREATE LINK, DROP LINK, SHOW LINK"))
 
 (defn- singlestore-user-exists?
   "Check if a SingleStore user exists."
   [conn username]
   (seq (jdbc/query conn ["SELECT 1 FROM information_schema.users WHERE user = ?" username])))
 
+;; Synced SingleStore tables have an empty `:schema`, as in MySQL, so read grants fall back to the connected
+;; database. `sql-jdbc.conn/data-source-name` reads the same keys, but it names the connection pool and drivers
+;; may override it with a label that is not a database name.
 (defn- source-database-name
   "Return the Metabase-connected database name from database details."
   [database]
@@ -441,7 +456,7 @@
         (with-open [^Statement stmt (.createStatement ^Connection (:connection t-conn))]
           (doseq [sql [(format "CREATE DATABASE IF NOT EXISTS `%s`" db-name)
                        user-sql
-                       (format "GRANT ALL PRIVILEGES ON `%s`.* TO `%s`@'%%'" db-name user)]]
+                       (format "GRANT %s ON `%s`.* TO `%s`@'%%'" workspace-db-privileges db-name user)]]
             (.addBatch ^Statement stmt ^String sql))
           (.executeBatch ^Statement stmt))))
     {:schema           db-name
@@ -465,15 +480,14 @@
         qu         (sql.u/quote-name :mysql :field username)
         default-db (source-database-name database)
         sqls       (for [{db :schema, t :name} tables]
-                     (let [db-name (or (not-empty db) default-db)]
-                       (if db-name
-                         (format "GRANT SELECT ON %s.%s TO %s@'%%'"
-                                 (sql.u/quote-name :mysql :schema db-name)
-                                 (sql.u/quote-name :mysql :table t)
-                                 qu)
-                         (format "GRANT SELECT ON %s TO %s@'%%'"
-                                 (sql.u/quote-name :mysql :table t)
-                                 qu))))]
+                     (let [db-name (or (not-empty db) (not-empty default-db))]
+                       (when-not db-name
+                         (throw (ex-info "Cannot grant workspace read access: no database name for table"
+                                         {:table t :step :grant})))
+                       (format "GRANT SELECT ON %s.%s TO %s@'%%'"
+                               (sql.u/quote-name :mysql :schema db-name)
+                               (sql.u/quote-name :mysql :table t)
+                               qu)))]
     (jdbc/with-db-transaction [t-conn (sql-jdbc.conn/db->pooled-connection-spec (:id database))]
       (with-open [^Statement stmt (.createStatement ^Connection (:connection t-conn))]
         (doseq [sql sqls]
