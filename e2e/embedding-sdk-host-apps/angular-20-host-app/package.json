@@ -12,7 +12,7 @@
     "@angular/compiler": "^20.3.32",
     "@angular/core": "^20.3.32",
     "@angular/platform-browser": "^20.3.32",
-    "@angular/router": "^20.3.32",
+    "@angular/router": "^20.3.33",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
