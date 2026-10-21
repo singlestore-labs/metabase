@@ -97,6 +97,16 @@
      :user     (has-results? conn-spec
                              ["SELECT 1 FROM mysql.user WHERE user = ?" username])}))
 
+(defmethod workspace-isolation-resources-exist? :singlestore
+  [database workspace]
+  (let [db-name   (driver.u/workspace-isolation-namespace-name workspace)
+        username  (driver.u/workspace-isolation-user-name workspace)
+        conn-spec (sql-jdbc.conn/db->pooled-connection-spec (:id database))]
+    {:database (has-results? conn-spec
+                             ["SELECT 1 FROM information_schema.schemata WHERE schema_name = ?" db-name])
+     :user     (has-results? conn-spec
+                             ["SELECT 1 FROM information_schema.users WHERE user = ?" username])}))
+
 ;;; Tests
 (deftest destroy-workspace-isolation-test
   (mt/test-drivers (mt/normal-drivers-with-feature :workspace)
